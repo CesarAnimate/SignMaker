@@ -699,10 +699,15 @@
             </div>
           </nav>
         </nav>
+        <div id="subPanelDividerSettings" class="subPanelDividerSettings" hidden>
+          <span class="subPanelDividerSettingsLabel">Subpanel Dividers:</span>
+          <div id="subPanelDividerToggleList" class="subPanelDividerToggleList"></div>
+        </div>
         <nav class="sMModalBar sMModalSubBar">
           <div data-tab="sMSPBlocks" class="sMModalTab selected">
             Block Elements
           </div>
+          <div id="stackedPanelList" class="stackedPanelList"></div>
         </nav>
         <div class="sMModalContent">
           <div id="sMSPShield" class="tabHidden">
@@ -1101,28 +1106,76 @@
                   <input id="sdAdvisory_vertPaddingVal" class="smallVal" type="number" value=".3" step="0.1" />
                 </div>
 
-                <div data-property="sdIcon" class="hidden">
-                  <label for="sdIcon_icon">Icon: </label>
-                  <button type="button" id="sdIcon_chooseBtn">Choose Icon...</button>
-                  <span id="sdIcon_selectedLabel">Current: None</span>
-                  <input type="hidden" id="sdIcon_icon" value="" />
-                  <label for="sdIcon_iconSize">Size (rem): </label>
-                  <input type="number" id="sdIcon_iconSize" placeholder="3" min="0.5" max="12" step="0.1" value="3" />
-                  <br />
-                  <label for="sdIcon_backgroundColor">BG Color: </label>
-                  <select id="sdIcon_backgroundColor"></select>
-                  <br />
-                  <label for="sdIcon_border">Border: </label>
-                  <input type="checkbox" id="sdIcon_border" />
-                  <select id="sdIcon_borderColor" data-toolTip="Border Color"></select>
-                  <input type="number" id="sdIcon_borderRadius" data-toolTip="Border Radius" class="sdTextEditorSmall"
-                    value="4" placeholder="4" step="1" min="0" max="8" />
-                  <br />
-                  <label for="sdIcon_spacing">Spacing:</label>
-                  <input type="number" id="sdIcon_spacing" data-toolTip="Spacing" min="0" max="8" value="0"
-                    placeholder="0" />
-                  <label for="sdIcon_alignment">Alignment: </label>
-                  <select id="sdIcon_alignment"></select>
+                <div data-property="sdIcon" class="hidden sdIconEditorLayout">
+                  <div class="sdIconMainColumn">
+                    <div class="sdIconControlRow sdIconPickerRow">
+                      <button type="button" id="sdIcon_chooseBtn">Choose Icon...</button>
+                      <span id="sdIcon_selectedLabel">Current: Airport</span>
+                      <input type="hidden" id="sdIcon_icon" value="AIRPORT" />
+                    </div>
+
+                    <div class="sdIconControlRow sdIconSizeRow">
+                      <label for="sdIcon_iconSizeSlider">Size:</label>
+                      <input type="range" id="sdIcon_iconSizeSlider" min="0.5" max="10" step="0.5" value="3" />
+                      <input type="number" id="sdIcon_iconSize" class="sdIconSizeInput" placeholder="3" min="0.5" max="10" step="0.5" value="3" />
+                      <button type="button" id="sdIcon_sizeReset" class="sdIconResetButton" aria-label="Reset icon size">
+                        <span class="material-symbols-outlined">restart_alt</span>
+                      </button>
+                    </div>
+
+                    <div class="sdIconControlRow sdIconAppearanceRow">
+                      <label for="sdIcon_backgroundColor">BG Color:</label>
+                      <div class="sdIconAppearanceControls">
+                        <select id="sdIcon_backgroundColor"></select>
+                        <label class="sdIconInlineCheckbox" for="sdIcon_invertColors">
+                          <span>Invert colors:</span>
+                          <input type="checkbox" id="sdIcon_invertColors" />
+                        </label>
+                        <label class="sdIconInlineCheckbox" for="sdIcon_border">
+                          <span>Border:</span>
+                          <input type="checkbox" id="sdIcon_border" />
+                        </label>
+                      </div>
+                      <select id="sdIcon_borderColor" data-toolTip="Border Color"></select>
+                      <input type="number" id="sdIcon_borderRadius" data-toolTip="Border Radius" class="sdTextEditorSmall"
+                        value="4" placeholder="4" step="1" min="0" max="8" />
+                    </div>
+
+                    <div class="sdIconControlRow sdIconAlignmentRow">
+                      <label>Alignment:</label>
+                      <select id="sdIcon_alignment" class="sdIconAlignmentSelectHidden" aria-hidden="true" tabindex="-1"></select>
+                      <div class="sdIconAlignmentButtons" role="group" aria-label="Icon alignment">
+                        <button type="button" data-sd-icon-align="Left">Left</button>
+                        <button type="button" data-sd-icon-align="Center">Center</button>
+                        <button type="button" data-sd-icon-align="Right">Right</button>
+                      </div>
+                    </div>
+
+                    <div class="sdIconControlRow sdIconPaddingRow sdIconPaddingHorizontalRow">
+                      <label for="sdIcon_paddingHorizontal">Horizontal Padding:</label>
+                      <input type="range" id="sdIcon_paddingHorizontal" min="-5" max="8" step="0.1" value="0" />
+                      <input id="sdIcon_paddingHorizontalVal" class="smallVal" type="number" min="-5" max="8" step="0.1" value="0" />
+                      <button type="button" id="sdIcon_paddingHorizontalReset" class="sdIconResetButton" aria-label="Reset horizontal padding">
+                        <span class="material-symbols-outlined">restart_alt</span>
+                      </button>
+                    </div>
+
+                  </div>
+
+                  <div class="sdIconPreviewColumn">
+                    <div id="sdIcon_previewBox" class="sdIconPreviewBox" aria-label="Selected icon preview">
+                      <img id="sdIcon_previewImage" alt="Selected icon preview" />
+                    </div>
+
+                    <div class="sdIconControlRow sdIconPaddingRow sdIconPaddingVerticalRow">
+                      <label for="sdIcon_paddingVertical">Vertical Padding:</label>
+                      <input type="range" id="sdIcon_paddingVertical" min="-2" max="8" step="0.1" value="0" />
+                      <input id="sdIcon_paddingVerticalVal" class="smallVal" type="number" min="-2" max="8" step="0.1" value="0" />
+                      <button type="button" id="sdIcon_paddingVerticalReset" class="sdIconResetButton" aria-label="Reset vertical padding">
+                        <span class="material-symbols-outlined">restart_alt</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
                 <div data-property="sdBeacon" class="hidden">
                   <label for="sdBeacon_size">Size (rem): </label>
@@ -1494,14 +1547,25 @@
           </div>
           <div id="sMTemplatesSaved" class="tabHidden">
             <div class="templateSaveSection">
-              <h4>Save Current Sign as Template</h4>
+              <h4>Save New Template</h4>
               <div class="templateSaveInput">
                 <input type="text" id="templateNameInput" placeholder="Enter template name..."
-                  onkeypress="if(event.key === 'Enter') app.saveTemplate(this.value);" />
-                <button id="saveTemplateBtn" onclick="app.saveTemplate(document.getElementById('templateNameInput').value);">
-                  <span class="material-symbols-outlined">save</span>
-                  Save Template
+                  onkeypress="if(event.key === 'Enter') app.savePostTemplate(this.value);" />
+                <button id="savePanelTemplateBtn" onclick="app.savePanelTemplate(document.getElementById('templateNameInput').value);">
+                  <span class="material-symbols-outlined">dashboard_customize</span>
+                  Save Panel
                 </button>
+                <button id="savePostTemplateBtn" onclick="app.savePostTemplate(document.getElementById('templateNameInput').value);">
+                  <span class="material-symbols-outlined">save</span>
+                  Save Post
+                </button>
+              </div>
+              <div class="templateSearchSortRow">
+                <input type="search" id="templateSearchInput" placeholder="Search saved templates..." oninput="app.refreshTemplatesList();" />
+                <select id="templateSortSelect" onchange="app.refreshTemplatesList();" aria-label="Template sort order">
+                  <option value="date-created" selected>Date created</option>
+                  <option value="alphabetical">Alphabetical</option>
+                </select>
               </div>
             </div>
             <hr />
@@ -1524,6 +1588,18 @@
         <button id="closeIconSelector" class="assetSelectorClose" type="button" aria-label="Close icon selector">
           <span class="material-symbols-outlined">close</span>
         </button>
+      </div>
+      <div class="customIconUploadToolbar">
+        <button id="uploadCustomIconButton" class="customIconUploadButton" type="button">
+          <span class="material-symbols-outlined">upload_file</span>
+          <span>Upload Icon</span>
+        </button>
+        <input
+          id="uploadCustomIconFile"
+          type="file"
+          accept=".svg,.png,image/svg+xml,image/png"
+          hidden
+        />
       </div>
       <input type="search" id="iconSearch" class="assetSelectorSearch" placeholder="Search icons..." />
       <div id="iconGrid" class="iconGrid assetPickerGrid"></div>
@@ -1641,20 +1717,45 @@
                       <option value="never">Never</option>
                     </select>
 
-                    <label for="settingsUseKeybinds">Use keybinds:</label>
-                    <select id="settingsUseKeybinds">
-                      <option selected>Dropdown</option>
-                    </select>
+                    <label for="settingsTemplateLoadWarning">Template load warning:</label>
+                    <input
+                      type="checkbox"
+                      id="settingsTemplateLoadWarning"
+                      onchange="if (typeof app !== 'undefined' && app.setTemplateLoadWarningEnabled) app.setTemplateLoadWarningEnabled(this.checked);"
+                    />
 
-                    <label for="settingsUndoHistory">Undo history:</label>
-                    <select id="settingsUndoHistory">
-                      <option selected>Dropdown</option>
-                    </select>
-
-                    <label for="settingsShowPost">Show post:</label>
-                    <select id="settingsShowPost">
-                      <option selected>Dropdown</option>
-                    </select>
+                    <label id="settingsUseKeybindsLabel">Use keybinds:</label>
+                    <div
+                      id="settingsUseKeybinds"
+                      class="settingsSegmentedRow settingsKeybindModeButtons"
+                      role="group"
+                      aria-labelledby="settingsUseKeybindsLabel"
+                    >
+                      <button
+                        type="button"
+                        class="settingsSegmentButton active"
+                        data-keybind-mode="all"
+                        aria-pressed="true"
+                      >
+                        All Keybinds
+                      </button>
+                      <button
+                        type="button"
+                        class="settingsSegmentButton"
+                        data-keybind-mode="undo-redo"
+                        aria-pressed="false"
+                      >
+                        Undo/Redo Only
+                      </button>
+                      <button
+                        type="button"
+                        class="settingsSegmentButton"
+                        data-keybind-mode="none"
+                        aria-pressed="false"
+                      >
+                        None
+                      </button>
+                    </div>
                   </div>
 
                   <div class="settingsPostPanel">
@@ -1688,6 +1789,26 @@
                         onchange="formHandler.readForm();"
                         onblur="formHandler.readForm();"
                       />
+
+                      <label for="settingsPanelSpacing">Panel Spacing:</label>
+                      <div class="settingsPanelSpacingControl">
+                        <input
+                          type="range"
+                          id="settingsPanelSpacing"
+                          min="0"
+                          max="8"
+                          step="0.1"
+                          value="4"
+                        />
+                        <input
+                          type="number"
+                          id="settingsPanelSpacingValue"
+                          min="0"
+                          max="8"
+                          step="0.1"
+                          value="4"
+                        />
+                      </div>
 
                       <label for="showPost" id="showPostLabel">Hide Post:</label>
                       <input

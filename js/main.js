@@ -16,11 +16,147 @@ const app = (function () {
   let currentlySelectedAPLArrowIndex = 0;
   const DEFAULT_POST_POSITION = "Right";
   const DEFAULT_PANEL_SPACING = 4;
+  const DEFAULT_STACKED_PANEL_SPACING = 0;
+  const DEFAULT_STACKED_PANEL_MATCH_WIDTH = false;
   const APP_STORAGE_KEY = "signMaker.autosave.v1";
   const RESTORE_ON_REFRESH_STORAGE_KEY = "signMaker.restoreOnRefresh";
 
+
+  const ensureExtendedGuideArrowOptions = () => {
+    if (
+      typeof Sign === "undefined" ||
+      !Sign.prototype ||
+      !Array.isArray(Sign.prototype.guideArrows)
+    ) {
+      return;
+    }
+
+    const additions = [
+      "Down (IL):DOWN_IL",
+      "Down (CA):DOWN_CA",
+    ];
+
+    const getLabel = (entry) => String(entry || "").split(":")[0].trim();
+    const existingLabels = new Set(Sign.prototype.guideArrows.map(getLabel));
+
+    let insertIndex = Sign.prototype.guideArrows.findIndex(
+      (entry) => getLabel(entry) === "Down Arrow"
+    );
+
+    if (insertIndex < 0) {
+      insertIndex = Sign.prototype.guideArrows.findIndex(
+        (entry) => getLabel(entry) === "None"
+      );
+    }
+
+    if (insertIndex < 0) {
+      insertIndex = Sign.prototype.guideArrows.length - 1;
+    }
+
+    for (const addition of additions) {
+      const label = getLabel(addition);
+
+      if (existingLabels.has(label)) {
+        continue;
+      }
+
+      insertIndex += 1;
+      Sign.prototype.guideArrows.splice(insertIndex, 0, addition);
+      existingLabels.add(label);
+    }
+  };
+
   const getCurrentPanel = () => {
     return post.panels[currentlySelectedPanelIndex];
+  };
+
+  const isStackedPanelBottom = (panelIndex = currentlySelectedPanelIndex) =>
+    !!(
+      post &&
+      Array.isArray(post.panels) &&
+      panelIndex > 0 &&
+      post.panels[panelIndex] &&
+      post.panels[panelIndex].stackedWithPrevious === true
+    );
+
+  const getStackedPanelTopIndex = (panelIndex = currentlySelectedPanelIndex) => {
+    if (!post || !Array.isArray(post.panels) || post.panels.length === 0) {
+      return 0;
+    }
+
+    const normalizedIndex = clamp(
+      typeof panelIndex === "number" ? panelIndex : currentlySelectedPanelIndex,
+      0,
+      post.panels.length - 1
+    );
+
+    return isStackedPanelBottom(normalizedIndex) ? normalizedIndex - 1 : normalizedIndex;
+  };
+
+  const getStackedPanelBottomIndex = (panelIndex = currentlySelectedPanelIndex) => {
+    if (!post || !Array.isArray(post.panels) || post.panels.length === 0) {
+      return -1;
+    }
+
+    const topIndex = getStackedPanelTopIndex(panelIndex);
+    const possibleBottomIndex = topIndex + 1;
+
+    return possibleBottomIndex < post.panels.length &&
+      post.panels[possibleBottomIndex]?.stackedWithPrevious === true
+      ? possibleBottomIndex
+      : -1;
+  };
+
+  const normalizeStackedPanelSpacing = (value) => {
+    const parsed = typeof value === "string" ? parseFloat(value) : Number(value);
+
+    if (!Number.isFinite(parsed)) {
+      return DEFAULT_STACKED_PANEL_SPACING;
+    }
+
+    return Math.max(0, Math.min(4, parsed));
+  };
+
+  const getStackedPanelSettingsForTopIndex = (topIndex) => {
+    const panel =
+      post &&
+      Array.isArray(post.panels) &&
+      topIndex >= 0 &&
+      topIndex < post.panels.length
+        ? post.panels[topIndex]
+        : null;
+
+    if (!panel) {
+      return {
+        spacing: DEFAULT_STACKED_PANEL_SPACING,
+        matchWidth: DEFAULT_STACKED_PANEL_MATCH_WIDTH,
+      };
+    }
+
+    panel.stackedPanelSpacing = normalizeStackedPanelSpacing(
+      panel.stackedPanelSpacing
+    );
+    panel.stackedPanelMatchWidth = panel.stackedPanelMatchWidth === true;
+
+    return {
+      spacing: panel.stackedPanelSpacing,
+      matchWidth: panel.stackedPanelMatchWidth,
+    };
+  };
+
+  const getCurrentStackedPanelInfo = () => {
+    const topIndex = getStackedPanelTopIndex(currentlySelectedPanelIndex);
+    const bottomIndex = getStackedPanelBottomIndex(topIndex);
+    const settings = getStackedPanelSettingsForTopIndex(topIndex);
+
+    return {
+      topIndex,
+      bottomIndex,
+      selectedSlot: currentlySelectedPanelIndex === bottomIndex ? "Bottom" : "Top",
+      hasBottom: bottomIndex >= 0,
+      spacing: settings.spacing,
+      matchWidth: settings.matchWidth,
+    };
   };
 
   const GLOBAL_TOP_SUBPANEL_INDEX = -2;
@@ -34,9 +170,11 @@ const app = (function () {
       ? "globalTopBlockElements"
       : "globalBottomBlockElements";
 
+  const createDefaultGlobalBlockElement = () => new ActionMessageElement();
+
   const createDefaultGlobalBlockElements = () =>
     new Control({
-      rows: [[new ControlTextElement()]],
+      rows: [[createDefaultGlobalBlockElement()]],
       blockProperties: [new Block()],
     });
 
@@ -51,11 +189,11 @@ const app = (function () {
       : createDefaultGlobalBlockElements();
 
     if (!Array.isArray(control.rows) || control.rows.length === 0) {
-      control.rows = [[new ControlTextElement()]];
+      control.rows = [[createDefaultGlobalBlockElement()]];
     }
 
     if (!control.rows.some((row) => Array.isArray(row) && row.length > 0)) {
-      control.rows = [[new ControlTextElement()]];
+      control.rows = [[createDefaultGlobalBlockElement()]];
     }
 
     if (!Array.isArray(control.blockProperties)) {
@@ -326,6 +464,218 @@ const app = (function () {
           fileInfo.panel = -1;
         }
       }
+    };
+
+
+    const normalizeSubpanelDividerSettings = (sign) => {
+      if (!sign || !Array.isArray(sign.subPanels)) {
+        return [];
+      }
+
+      const dividerCount = Math.max(0, sign.subPanels.length - 1);
+
+      if (!Array.isArray(sign.disabledSubpanelDividers)) {
+        sign.disabledSubpanelDividers = [];
+      }
+
+      const normalized = [];
+
+      for (let index = 0; index < dividerCount; index++) {
+        normalized[index] = sign.disabledSubpanelDividers[index] === true;
+      }
+
+      sign.disabledSubpanelDividers = normalized;
+      return sign.disabledSubpanelDividers;
+    };
+
+    const isSubpanelDividerVisibleForSign = (sign, dividerIndex) => {
+      if (!sign || !Array.isArray(sign.subPanels)) {
+        return false;
+      }
+
+      const normalizedIndex = Number(dividerIndex);
+
+      if (
+        !Number.isFinite(normalizedIndex) ||
+        normalizedIndex < 0 ||
+        normalizedIndex >= Math.max(0, sign.subPanels.length - 1)
+      ) {
+        return false;
+      }
+
+      const disabledDividers = normalizeSubpanelDividerSettings(sign);
+      return disabledDividers[normalizedIndex] !== true;
+    };
+
+    const formatSubpanelNumberList = (numbers) => {
+      const labels = Array.isArray(numbers) ? numbers.map(String) : [];
+
+      if (labels.length === 0) {
+        return "";
+      }
+
+      if (labels.length === 1) {
+        return labels[0];
+      }
+
+      if (labels.length === 2) {
+        return `${labels[0]} and ${labels[1]}`;
+      }
+
+      return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
+    };
+
+    const getAPLSubpanelGroupsForSign = (sign) => {
+      if (!sign || !Array.isArray(sign.subPanels) || sign.subPanels.length === 0) {
+        return [];
+      }
+
+      normalizeSubpanelDividerSettings(sign);
+
+      const groups = [];
+      let currentGroup = {
+        start: 0,
+        end: 0,
+        indices: [0],
+      };
+
+      for (let subPanelIndex = 0; subPanelIndex < sign.subPanels.length - 1; subPanelIndex++) {
+        if (isSubpanelDividerVisibleForSign(sign, subPanelIndex)) {
+          groups.push(currentGroup);
+          currentGroup = {
+            start: subPanelIndex + 1,
+            end: subPanelIndex + 1,
+            indices: [subPanelIndex + 1],
+          };
+        } else {
+          currentGroup.end = subPanelIndex + 1;
+          currentGroup.indices.push(subPanelIndex + 1);
+        }
+      }
+
+      groups.push(currentGroup);
+
+      return groups.map((group, groupIndex) => ({
+        ...group,
+        groupIndex,
+        label:
+          group.indices.length === 1
+            ? `Subpanel ${group.indices[0] + 1}`
+            : `Subpanels ${formatSubpanelNumberList(
+                group.indices.map((index) => index + 1)
+              )}`,
+      }));
+    };
+
+    const getAPLGroupForSubPanelIndex = (sign, subPanelIndex) => {
+      const groups = getAPLSubpanelGroupsForSign(sign);
+      const normalizedIndex = Number(subPanelIndex);
+
+      return (
+        groups.find((group) => group.indices.includes(normalizedIndex)) ||
+        groups[0] ||
+        null
+      );
+    };
+
+    const getAPLGroupStartForSubPanelIndex = (sign, subPanelIndex) => {
+      const group = getAPLGroupForSubPanelIndex(sign, subPanelIndex);
+      return group ? group.start : 0;
+    };
+
+    const getVisibleAPLDividerIndicesForSign = (sign) =>
+      getAPLSubpanelGroupsForSign(sign)
+        .slice(0, -1)
+        .map((group) => group.end)
+        .filter((dividerIndex) => isSubpanelDividerVisibleForSign(sign, dividerIndex));
+
+    const getNearestVisibleAPLDividerIndex = (sign, dividerIndex) => {
+      const visibleDividers = getVisibleAPLDividerIndicesForSign(sign);
+
+      if (!visibleDividers.length) {
+        return null;
+      }
+
+      const normalizedIndex = Number(dividerIndex);
+
+      if (
+        Number.isFinite(normalizedIndex) &&
+        visibleDividers.includes(normalizedIndex)
+      ) {
+        return normalizedIndex;
+      }
+
+      return visibleDividers[0];
+    };
+
+    const normalizeAPLArrowsForSubpanelDividerGroups = (sign) => {
+      if (!sign || !Array.isArray(sign.aplArrows)) {
+        return;
+      }
+
+      normalizeSubpanelDividerSettings(sign);
+
+      sign.aplArrows = sign.aplArrows.filter((arrow) => {
+        if (arrow?.placement !== "divider") {
+          return true;
+        }
+
+        return isSubpanelDividerVisibleForSign(
+          sign,
+          arrow.dividerAfterSubPanelIndex
+        );
+      });
+
+      for (const arrow of sign.aplArrows) {
+        if (!arrow || arrow.placement === "divider") {
+          continue;
+        }
+
+        arrow.subPanelIndex = getAPLGroupStartForSubPanelIndex(
+          sign,
+          typeof arrow.subPanelIndex === "number" ? arrow.subPanelIndex : 0
+        );
+      }
+    };
+
+    const setSubpanelDividerVisible = function (dividerIndex, visible) {
+      return runWithUndo(() => {
+        const sign = getCurrentPanel()?.sign;
+
+        if (!sign || !Array.isArray(sign.subPanels)) {
+          return;
+        }
+
+        const rawIndex = Number(dividerIndex);
+
+        if (!Number.isFinite(rawIndex)) {
+          return;
+        }
+
+        const normalizedIndex = clamp(
+          rawIndex,
+          0,
+          Math.max(0, sign.subPanels.length - 2)
+        );
+
+        const disabledDividers = normalizeSubpanelDividerSettings(sign);
+        disabledDividers[normalizedIndex] = visible === false;
+
+        normalizeAPLArrowsForSubpanelDividerGroups(sign);
+
+        formHandler.updateForm();
+        redraw();
+      });
+    };
+
+    const getAPLSubpanelGroupsForCurrentPanel = () => {
+      const sign = getCurrentPanel()?.sign;
+      return getAPLSubpanelGroupsForSign(sign);
+    };
+
+    const isSubpanelDividerVisible = (dividerIndex) => {
+      const sign = getCurrentPanel()?.sign;
+      return isSubpanelDividerVisibleForSign(sign, dividerIndex);
     };
 
     const historyReplacer = (key, value) => {
@@ -948,116 +1298,355 @@ const app = (function () {
     }
 
     const computed = window.getComputedStyle(signElmt);
-    const defaultBorderColor =
-      computed.borderTopColor ||
-      computed.borderColor ||
-      (lib.colors && lib.colors.White) ||
-      "rgb(255, 255, 255)";
-    const borderWidth = parseFloat(computed.borderTopWidth) || 0;
     const fillColor =
       computed.backgroundColor && computed.backgroundColor !== "rgba(0, 0, 0, 0)"
         ? computed.backgroundColor
         : "transparent";
+    const defaultBorderColor =
+      computed.borderTopColor && computed.borderTopColor !== "rgba(0, 0, 0, 0)"
+        ? computed.borderTopColor
+        : "currentColor";
 
-    const clearDynamicBorder = () => {
-      signElmt.style.removeProperty("backgroundImage");
-      signElmt.style.removeProperty("backgroundOrigin");
-      signElmt.style.removeProperty("backgroundClip");
-      signElmt.style.removeProperty("backgroundRepeat");
-      signElmt.style.removeProperty("backgroundPosition");
-      signElmt.style.removeProperty("borderColor");
+    const syncDynamicCornerPatches = (topCornerColor, bottomCornerColor) => {
+      const signContainerElmt = signElmt.closest(".signContainer");
+
+      if (!signContainerElmt) {
+        return;
+      }
+
+      const ensurePatch = (position) => {
+        const className = `dynamicSignCornerPatch ${position}`;
+        let patchElmt = signContainerElmt.querySelector(
+          `:scope > .dynamicSignCornerPatch.${position}`
+        );
+
+        if (!patchElmt) {
+          patchElmt = document.createElement("div");
+          patchElmt.className = className;
+          signContainerElmt.insertBefore(patchElmt, signContainerElmt.firstChild);
+        }
+
+        return patchElmt;
+      };
+
+      const syncPatch = (position, color) => {
+        const patchElmt = signContainerElmt.querySelector(
+          `:scope > .dynamicSignCornerPatch.${position}`
+        );
+
+        if (!color) {
+          patchElmt?.remove();
+          signContainerElmt.removeAttribute(`data-dynamic-${position}-corner`);
+          signContainerElmt.style.removeProperty(
+            `--dynamicSign${position === "top" ? "Top" : "Bottom"}CornerColor`
+          );
+          return;
+        }
+
+        const nextPatch = ensurePatch(position);
+        nextPatch.style.backgroundColor = color;
+        signContainerElmt.dataset[`dynamic${position[0].toUpperCase()}${position.slice(1)}Corner`] = "true";
+        signContainerElmt.style.setProperty(
+          `--dynamicSign${position === "top" ? "Top" : "Bottom"}CornerColor`,
+          color
+        );
+      };
+
+      syncPatch("top", topCornerColor);
+      syncPatch("bottom", bottomCornerColor);
+
+      const hasPatches = !!signContainerElmt.querySelector(
+        ":scope > .dynamicSignCornerPatch"
+      );
+      signContainerElmt.classList.toggle(
+        "hasDynamicSignCornerPatches",
+        hasPatches
+      );
     };
 
-    const fullBleedRows = signElmt.querySelectorAll(
-      ".blockElementRow[data-full-bleed-border-color]"
+    const clearDynamicPanelBackground = () => {
+      signElmt.style.removeProperty("background-image");
+      signElmt.style.removeProperty("background-origin");
+      signElmt.style.removeProperty("background-clip");
+      signElmt.style.removeProperty("background-repeat");
+      signElmt.style.removeProperty("background-position");
+      signElmt.style.removeProperty("background-size");
+      signElmt.style.removeProperty("border-color");
+      syncDynamicCornerPatches(null, null);
+    };
+
+    const backgroundRows = Array.from(
+      signElmt.querySelectorAll(".blockElementRow[data-full-bleed-background-color]")
+    ).filter((row) => row.dataset.fullBleedBackgroundColor);
+
+    const borderRows = Array.from(
+      signElmt.querySelectorAll(
+        ".blockElementRow[data-full-bleed-background-color], .blockElementRow[data-full-bleed-border-color]"
+      )
+    ).filter(
+      (row, index, rows) =>
+        rows.indexOf(row) === index &&
+        (row.dataset.fullBleedBackgroundColor || row.dataset.fullBleedBorderColor)
     );
 
-    if (!fullBleedRows.length) {
-      clearDynamicBorder();
+    if (!backgroundRows.length && !borderRows.length) {
+      clearDynamicPanelBackground();
       return;
     }
 
     const signRect = signElmt.getBoundingClientRect();
     const signHeight = signRect.height;
+
     if (!signHeight) {
-      clearDynamicBorder();
+      clearDynamicPanelBackground();
       return;
     }
 
-    const segments = [];
-    for (const rowEl of fullBleedRows) {
-      const color = rowEl.dataset.fullBleedBorderColor;
-      if (!color) {
-        continue;
+    const getRowsInside = (root, dataAttribute) => {
+      if (!root) {
+        return [];
       }
 
+      return Array.from(
+        root.querySelectorAll(`.blockElementRow[${dataAttribute}]`)
+      ).filter((row) => row.dataset[dataAttribute.replace(/^data-/, "").replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())]);
+    };
+
+    const getBackgroundRowsInside = (root) =>
+      root
+        ? Array.from(
+            root.querySelectorAll(".blockElementRow[data-full-bleed-background-color]")
+          ).filter((row) => row.dataset.fullBleedBackgroundColor)
+        : [];
+
+    const getBorderRowsInside = (root) =>
+      root
+        ? Array.from(
+            root.querySelectorAll(
+              ".blockElementRow[data-full-bleed-background-color], .blockElementRow[data-full-bleed-border-color]"
+            )
+          ).filter(
+            (row, index, rows) =>
+              rows.indexOf(row) === index &&
+              (row.dataset.fullBleedBackgroundColor || row.dataset.fullBleedBorderColor)
+          )
+        : [];
+
+    const resolveCssColor = (color) => {
+      const rawColor = String(color || "").trim();
+
+      if (!rawColor) {
+        return "";
+      }
+
+      if (/^rgba?\(/i.test(rawColor)) {
+        return rawColor;
+      }
+
+      const probe = document.createElement("span");
+      probe.style.color = rawColor;
+      probe.style.position = "absolute";
+      probe.style.left = "-9999px";
+      probe.style.top = "-9999px";
+      probe.style.pointerEvents = "none";
+      document.body.appendChild(probe);
+      const resolvedColor = window.getComputedStyle(probe).color;
+      probe.remove();
+      return resolvedColor || rawColor;
+    };
+
+    const getContrastingBorderColor = (backgroundColor) => {
+      const resolvedColor = resolveCssColor(backgroundColor);
+      const match = resolvedColor.match(
+        /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i
+      );
+
+      if (!match) {
+        return defaultBorderColor;
+      }
+
+      const r = Number(match[1]);
+      const g = Number(match[2]);
+      const b = Number(match[3]);
+
+      if (![r, g, b].every(Number.isFinite)) {
+        return defaultBorderColor;
+      }
+
+      const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      return luminance > 0.58
+        ? ((lib?.colors && lib.colors.Black) || "black")
+        : ((lib?.colors && lib.colors.White) || "white");
+    };
+
+    const getRowSpan = (rowEl, rowsInGlobalTop, rowsInGlobalBottom) => {
       const rowRect = rowEl.getBoundingClientRect();
       let start = rowRect.top - signRect.top;
       let end = rowRect.bottom - signRect.top;
+
       if (end <= start) {
-        continue;
+        return null;
       }
 
-      const edgeThreshold = borderWidth + 0.5;
-      if (start <= edgeThreshold) {
+      const globalTop = rowEl.closest(".globalTop");
+      const globalBottom = rowEl.closest(".globalBottom");
+
+      if (globalTop && rowsInGlobalTop[0] === rowEl) {
         start = 0;
       }
-      if (signHeight - end <= edgeThreshold) {
+
+      if (
+        globalBottom &&
+        rowsInGlobalBottom[rowsInGlobalBottom.length - 1] === rowEl
+      ) {
         end = signHeight;
       }
 
-      const startPct = Math.max(
-        0,
-        Math.min(100, (start / signHeight) * 100)
-      );
+      const startPct = Math.max(0, Math.min(100, (start / signHeight) * 100));
       const endPct = Math.max(0, Math.min(100, (end / signHeight) * 100));
+
       if (endPct <= startPct) {
-        continue;
+        return null;
       }
 
-      segments.push({ start: startPct, end: endPct, color });
-    }
+      return {
+        start: startPct,
+        end: endPct,
+      };
+    };
 
-    if (!segments.length) {
-      clearDynamicBorder();
+    const buildSegments = (rows, getColor, getGlobalRows) => {
+      const segments = [];
+
+      for (const rowEl of rows) {
+        const color = getColor(rowEl);
+
+        if (!color) {
+          continue;
+        }
+
+        const globalTop = rowEl.closest(".globalTop");
+        const globalBottom = rowEl.closest(".globalBottom");
+        const rowsInGlobalTop = globalTop ? getGlobalRows(globalTop) : [];
+        const rowsInGlobalBottom = globalBottom ? getGlobalRows(globalBottom) : [];
+        const span = getRowSpan(rowEl, rowsInGlobalTop, rowsInGlobalBottom);
+
+        if (!span) {
+          continue;
+        }
+
+        segments.push({
+          ...span,
+          color,
+        });
+      }
+
+      segments.sort((a, b) => a.start - b.start);
+
+      const mergedSegments = [];
+      for (const segment of segments) {
+        const previous = mergedSegments[mergedSegments.length - 1];
+
+        if (
+          previous &&
+          previous.color === segment.color &&
+          segment.start <= previous.end
+        ) {
+          previous.end = Math.max(previous.end, segment.end);
+        } else {
+          mergedSegments.push({ ...segment });
+        }
+      }
+
+      return mergedSegments;
+    };
+
+    const buildGradient = (segments, gapColor) => {
+      const gradientStops = [];
+      let cursor = 0;
+
+      const addSegment = (color, start, end) => {
+        const startClamped = Math.max(0, Math.min(100, start));
+        const endClamped = Math.max(0, Math.min(100, end));
+
+        if (endClamped <= startClamped) {
+          return;
+        }
+
+        gradientStops.push(
+          `${color} ${startClamped.toFixed(4)}%`,
+          `${color} ${endClamped.toFixed(4)}%`
+        );
+      };
+
+      for (const segment of segments) {
+        if (segment.start > cursor) {
+          addSegment(gapColor, cursor, segment.start);
+        }
+
+        addSegment(segment.color, Math.max(cursor, segment.start), segment.end);
+        cursor = Math.max(cursor, segment.end);
+      }
+
+      if (cursor < 100) {
+        addSegment(gapColor, cursor, 100);
+      }
+
+      return `linear-gradient(to bottom, ${gradientStops.join(", ")})`;
+    };
+
+    const backgroundSegments = buildSegments(
+      backgroundRows,
+      (row) => row.dataset.fullBleedBackgroundColor,
+      getBackgroundRowsInside
+    );
+
+    const borderSegments = buildSegments(
+      borderRows,
+      (row) =>
+        row.dataset.fullBleedBorderColor ||
+        getContrastingBorderColor(row.dataset.fullBleedBackgroundColor),
+      getBorderRowsInside
+    );
+
+    if (!backgroundSegments.length && !borderSegments.length) {
+      clearDynamicPanelBackground();
       return;
     }
 
-    segments.sort((a, b) => a.start - b.start);
+    const contentGradient = buildGradient(backgroundSegments, fillColor);
+    const borderGradient = buildGradient(borderSegments, defaultBorderColor);
 
-    const gradientStops = [];
-    let cursor = 0;
-    const addSegment = (color, start, end) => {
-      const startClamped = Math.max(0, Math.min(100, start));
-      const endClamped = Math.max(0, Math.min(100, end));
-      if (endClamped <= startClamped) {
-        return;
+    const getBackgroundSegmentTouchingEdge = (edge) => {
+      if (!backgroundSegments.length) {
+        return null;
       }
-      const startLabel = startClamped.toFixed(4);
-      const endLabel = endClamped.toFixed(4);
-      gradientStops.push(`${color} ${startLabel}%`, `${color} ${endLabel}%`);
+
+      if (edge === "top") {
+        return (
+          backgroundSegments.find((segment) => segment.start <= 0.001) || null
+        );
+      }
+
+      return (
+        [...backgroundSegments]
+          .reverse()
+          .find((segment) => segment.end >= 99.999) || null
+      );
     };
 
-    for (const segment of segments) {
-      if (segment.start > cursor) {
-        addSegment(defaultBorderColor, cursor, segment.start);
-      }
-      const segStart = Math.max(cursor, segment.start);
-      addSegment(segment.color, segStart, segment.end);
-      cursor = Math.max(cursor, segment.end);
-    }
+    syncDynamicCornerPatches(
+      getBackgroundSegmentTouchingEdge("top")?.color || null,
+      getBackgroundSegmentTouchingEdge("bottom")?.color || null
+    );
 
-    if (cursor < 100) {
-      addSegment(defaultBorderColor, cursor, 100);
-    }
-
-    const gradient = `linear-gradient(to bottom, ${gradientStops.join(", ")})`;
     signElmt.style.borderColor = "transparent";
-    signElmt.style.backgroundImage = `linear-gradient(${fillColor}, ${fillColor}), ${gradient}`;
-    signElmt.style.backgroundOrigin = "padding-box, border-box";
+    signElmt.style.backgroundImage = `${contentGradient}, ${borderGradient}`;
+    signElmt.style.backgroundOrigin = "border-box, border-box";
     signElmt.style.backgroundClip = "padding-box, border-box";
     signElmt.style.backgroundRepeat = "no-repeat, no-repeat";
     signElmt.style.backgroundPosition = "0 0, 0 0";
+    signElmt.style.backgroundSize = "100% 100%, 100% 100%";
   };
 
   const schedulePanelBorderGradientUpdate = (panelContainerElmt) => {
@@ -1321,6 +1910,8 @@ const app = (function () {
       post = new Post(DEFAULT_POST_POSITION);
       post.panelSpacing = DEFAULT_PANEL_SPACING;
 
+      ensureExtendedGuideArrowOptions();
+
       formHandler.init(exposeToFormHandler);
 
       // Initialize CustomShields after formHandler and wait for it
@@ -1384,8 +1975,13 @@ const app = (function () {
       return runWithUndo(() => {
         post.newPanel();
         currentlySelectedPanelIndex = post.panels.length - 1;
+        normalizeSelectionForCurrentPost();
         formHandler.updateForm();
         redraw();
+        requestAnimationFrame(() => {
+          redraw();
+          schedulePostViewportLayoutUpdate();
+        });
       });
     };
 
@@ -1394,8 +1990,13 @@ const app = (function () {
       return runWithUndo(() => {
         post.duplicatePanel(currentlySelectedPanelIndex);
         currentlySelectedPanelIndex++;
+        normalizeSelectionForCurrentPost();
         formHandler.updateForm();
         redraw();
+        requestAnimationFrame(() => {
+          redraw();
+          schedulePostViewportLayoutUpdate();
+        });
       });
     };
 
@@ -1424,8 +2025,19 @@ const app = (function () {
         }
 
         const deleteIndex = clamp(panelIndex, 0, post.panels.length - 1);
+        const deletedPanelWasTopOfStack =
+          !isStackedPanelBottom(deleteIndex) &&
+          getStackedPanelBottomIndex(deleteIndex) >= 0;
 
         post.deletePanel(deleteIndex);
+
+        if (deletedPanelWasTopOfStack && post.panels[deleteIndex]) {
+          post.panels[deleteIndex].stackedWithPrevious = false;
+        }
+
+        if (post.panels[0]) {
+          post.panels[0].stackedWithPrevious = false;
+        }
 
         if (!post.panels.length) {
           post.newPanel();
@@ -1954,6 +2566,8 @@ const app = (function () {
     const selectRenderedPanelArea = ({
       panelIndex,
       subPanelIndex = 0,
+      rowIndex = 0,
+      blockIndex = 0,
       exitTabIndex = null,
       menu = "subpanel",
       guideMode = null,
@@ -1965,14 +2579,39 @@ const app = (function () {
       const selectedPanel = getCurrentPanel();
       const subPanelCount = selectedPanel?.sign?.subPanels?.length || 0;
 
-      currentlySelectedSubPanelIndex = clamp(
-        subPanelIndex,
-        0,
-        Math.max(0, subPanelCount - 1)
-      );
+      const requestedSubPanelIndex = Number(subPanelIndex);
+      if (
+        requestedSubPanelIndex === GLOBAL_TOP_SUBPANEL_INDEX ||
+        requestedSubPanelIndex === GLOBAL_BOTTOM_SUBPANEL_INDEX
+      ) {
+        currentlySelectedSubPanelIndex = requestedSubPanelIndex;
+        ensureGlobalBlockElements(
+          selectedPanel.sign,
+          getGlobalBlockPositionFromIndex(requestedSubPanelIndex)
+        );
+      } else {
+        currentlySelectedSubPanelIndex = clamp(
+          Number.isFinite(requestedSubPanelIndex) ? requestedSubPanelIndex : 0,
+          0,
+          Math.max(0, subPanelCount - 1)
+        );
+      }
 
-      currentlySelectedRowIndex = 0;
-      currentlySelectedBlockIndex = 0;
+      const selectedTarget = getCurrentSubPanel();
+      const selectedRows = selectedTarget?.blockElements?.rows || [];
+      const requestedRowIndex = Number(rowIndex);
+      currentlySelectedRowIndex = clamp(
+        Number.isFinite(requestedRowIndex) ? requestedRowIndex : 0,
+        0,
+        Math.max(0, selectedRows.length - 1)
+      );
+      const selectedBlocks = selectedRows[currentlySelectedRowIndex] || [];
+      const requestedBlockIndex = Number(blockIndex);
+      currentlySelectedBlockIndex = clamp(
+        Number.isFinite(requestedBlockIndex) ? requestedBlockIndex : 0,
+        0,
+        Math.max(0, selectedBlocks.length - 1)
+      );
 
       if (exitTabIndex !== null && selectedPanel?.exitTabs?.length) {
         currentlySelectedExitTabIndex = clamp(
@@ -2558,8 +3197,9 @@ const app = (function () {
         currentlySelectedRowIndex = 0;
         currentlySelectedBlockIndex = 0;
 
-        formHandler.updateForm();
+        normalizeSelectionForCurrentPost();
         redraw();
+        formHandler.updateForm();
       });
     };
 
@@ -2580,8 +3220,161 @@ const app = (function () {
         currentlySelectedRowIndex = 0;
         currentlySelectedBlockIndex = 0;
 
-        formHandler.updateForm();
+        normalizeSelectionForCurrentPost();
         redraw();
+        formHandler.updateForm();
+      });
+    };
+
+    const createStackedPanelBelowSelected = () => {
+      return runWithUndo(() => {
+        if (!post || !Array.isArray(post.panels) || post.panels.length === 0) {
+          return;
+        }
+
+        const topIndex = getStackedPanelTopIndex(currentlySelectedPanelIndex);
+        const existingBottomIndex = getStackedPanelBottomIndex(topIndex);
+
+        if (existingBottomIndex >= 0) {
+          currentlySelectedPanelIndex = existingBottomIndex;
+          currentlySelectedSubPanelIndex = 0;
+          currentlySelectedRowIndex = 0;
+          currentlySelectedBlockIndex = 0;
+          normalizeSelectionForCurrentPost();
+          redraw();
+          formHandler.updateForm();
+          return;
+        }
+
+        const topPanel = post.panels[topIndex];
+        if (topPanel) {
+          getStackedPanelSettingsForTopIndex(topIndex);
+        }
+
+        const insertIndex = clamp(topIndex + 1, 0, post.panels.length);
+        post.newPanel();
+
+        const newPanel = post.panels.pop();
+        if (!newPanel) {
+          return;
+        }
+
+        newPanel.color = "Yellow";
+        newPanel.stackedWithPrevious = true;
+        post.panels.splice(insertIndex, 0, newPanel);
+
+        currentlySelectedPanelIndex = insertIndex;
+        currentlySelectedSubPanelIndex = 0;
+        currentlySelectedRowIndex = 0;
+        currentlySelectedBlockIndex = 0;
+        currentlySelectedAPLArrowIndex = 0;
+
+        normalizeSelectionForCurrentPost();
+        redraw();
+        formHandler.updateForm();
+      });
+    };
+
+    const changeEditingStackedPanelSlot = (slot) => {
+      if (!post || !Array.isArray(post.panels) || post.panels.length === 0) {
+        return;
+      }
+
+      const normalizedSlot = String(slot || "Top").toLowerCase();
+      const topIndex = getStackedPanelTopIndex(currentlySelectedPanelIndex);
+      const bottomIndex = getStackedPanelBottomIndex(topIndex);
+
+      if (normalizedSlot === "bottom") {
+        if (bottomIndex >= 0) {
+          changeEditingPanel(bottomIndex);
+        } else {
+          createStackedPanelBelowSelected();
+        }
+        return;
+      }
+
+      changeEditingPanel(topIndex);
+    };
+
+    const removeStackedPanelSlot = (slot) => {
+      return runWithUndo(() => {
+        if (!post || !Array.isArray(post.panels) || post.panels.length === 0) {
+          return;
+        }
+
+        const normalizedSlot = String(slot || "Bottom").toLowerCase();
+        const topIndex = getStackedPanelTopIndex(currentlySelectedPanelIndex);
+        const bottomIndex = getStackedPanelBottomIndex(topIndex);
+
+        if (normalizedSlot === "bottom") {
+          if (bottomIndex < 0) {
+            return;
+          }
+
+          post.deletePanel(bottomIndex);
+          currentlySelectedPanelIndex = topIndex;
+        } else {
+          if (bottomIndex < 0 || post.panels.length <= 1) {
+            return;
+          }
+
+          post.deletePanel(topIndex);
+          const promotedIndex = clamp(topIndex, 0, post.panels.length - 1);
+          if (post.panels[promotedIndex]) {
+            post.panels[promotedIndex].stackedWithPrevious = false;
+          }
+          currentlySelectedPanelIndex = promotedIndex;
+        }
+
+        currentlySelectedSubPanelIndex = 0;
+        currentlySelectedRowIndex = 0;
+        currentlySelectedBlockIndex = 0;
+        currentlySelectedAPLArrowIndex = 0;
+
+        normalizeSelectionForCurrentPost();
+        redraw();
+        formHandler.updateForm();
+      });
+    };
+
+
+    const setStackedPanelSpacing = (value) => {
+      return runWithUndo(() => {
+        if (!post || !Array.isArray(post.panels) || post.panels.length === 0) {
+          return;
+        }
+
+        const topIndex = getStackedPanelTopIndex(currentlySelectedPanelIndex);
+        const topPanel = post.panels[topIndex];
+
+        if (!topPanel) {
+          return;
+        }
+
+        topPanel.stackedPanelSpacing = normalizeStackedPanelSpacing(value);
+
+        redraw();
+        formHandler.updateForm();
+      });
+    };
+
+    const setStackedPanelMatchWidth = (matchWidth) => {
+      return runWithUndo(() => {
+        if (!post || !Array.isArray(post.panels) || post.panels.length === 0) {
+          return;
+        }
+
+        const topIndex = getStackedPanelTopIndex(currentlySelectedPanelIndex);
+        const topPanel = post.panels[topIndex];
+
+        if (!topPanel) {
+          return;
+        }
+
+        topPanel.stackedPanelMatchWidth = matchWidth === true;
+
+        redraw();
+        formHandler.updateForm();
       });
     };
 
@@ -2867,17 +3660,24 @@ const app = (function () {
     
     const setSelectedRowAndBlock = (row, block) => {
       const rows = getCurrentSubPanel()?.blockElements?.rows || [];
-      const normalizedRow = clamp(row, 0, Math.max(0, rows.length - 1));
+      const requestedRow = Number(row);
+      const normalizedRow = clamp(
+        Number.isFinite(requestedRow) ? requestedRow : 0,
+        0,
+        Math.max(0, rows.length - 1)
+      );
       const blocksInRow = rows[normalizedRow] || [];
+      const requestedBlock = Number(block);
 
       currentlySelectedRowIndex = normalizedRow;
       currentlySelectedBlockIndex = clamp(
-        block,
+        Number.isFinite(requestedBlock) ? requestedBlock : 0,
         0,
         Math.max(0, blocksInRow.length - 1)
       );
 
       formHandler.updateForm();
+      redraw();
     };
 
     const newControlElem = (selectedElem) => {
@@ -3137,7 +3937,7 @@ const app = (function () {
 
     // Flash the selected block element on the sign
     const subPanelContainer = document.querySelector(
-      `.blockElementMaster[data-subpanel="${currentlySelectedSubPanelIndex}"]`
+      `.blockElementMaster[data-panel-index="${currentlySelectedPanelIndex}"][data-subpanel="${currentlySelectedSubPanelIndex}"]`
     );
     if (subPanelContainer) {
       const signBlockElmt = subPanelContainer.querySelector(
@@ -3146,7 +3946,7 @@ const app = (function () {
         if (signBlockElmt) {
           flashElementAfterPostTransform(() => {
             const freshSubPanelContainer = document.querySelector(
-              `.blockElementMaster[data-subpanel="${currentlySelectedSubPanelIndex}"]`
+              `.blockElementMaster[data-panel-index="${currentlySelectedPanelIndex}"][data-subpanel="${currentlySelectedSubPanelIndex}"]`
             );
             if (!freshSubPanelContainer) {
               return null;
@@ -3436,6 +4236,8 @@ const app = (function () {
         sign.aplArrows.forEach((arrow, index) => {
           normalizeAPLArrowObject(arrow, index);
         });
+
+        normalizeAPLArrowsForSubpanelDividerGroups(sign);
       };
 
     const getDefaultAPLArrowKindForSubPanel = (
@@ -3627,10 +4429,15 @@ const app = (function () {
       const sign = getCurrentPanel().sign;
 
       if (placement === "divider") {
+        const normalizedDividerIndex = getNearestVisibleAPLDividerIndex(
+          sign,
+          dividerAfterSubPanelIndex
+        );
+
         const previousDividerArrows = sign.aplArrows.filter(
           (arrow) =>
             arrow.placement === "divider" &&
-            arrow.dividerAfterSubPanelIndex === dividerAfterSubPanelIndex
+            arrow.dividerAfterSubPanelIndex === normalizedDividerIndex
         );
 
         const previousArrow = previousDividerArrows[previousDividerArrows.length - 1];
@@ -3642,10 +4449,15 @@ const app = (function () {
         return DEFAULT_APL_ARROW_SPACING_REM;
       }
 
+      const normalizedSubPanelIndex = getAPLGroupStartForSubPanelIndex(
+        sign,
+        subPanelIndex
+      );
+
       const previousSubpanelArrows = sign.aplArrows.filter(
         (arrow) =>
           arrow.placement !== "divider" &&
-          arrow.subPanelIndex === subPanelIndex
+          arrow.subPanelIndex === normalizedSubPanelIndex
       );
 
       const previousArrow = previousSubpanelArrows[previousSubpanelArrows.length - 1];
@@ -3671,17 +4483,19 @@ const app = (function () {
 
         const normalizedPlacement = placement === "divider" ? "divider" : "subpanel";
 
-        const normalizedSubPanelIndex = clamp(
-          subPanelIndex,
-          0,
-          Math.max(0, sign.subPanels.length - 1)
+        const normalizedSubPanelIndex = getAPLGroupStartForSubPanelIndex(
+          sign,
+          clamp(subPanelIndex, 0, Math.max(0, sign.subPanels.length - 1))
         );
 
-        const normalizedDividerIndex = clamp(
-          dividerAfterSubPanelIndex,
-          0,
-          Math.max(0, sign.subPanels.length - 2)
+        const normalizedDividerIndex = getNearestVisibleAPLDividerIndex(
+          sign,
+          clamp(dividerAfterSubPanelIndex, 0, Math.max(0, sign.subPanels.length - 2))
         );
+
+        if (normalizedPlacement === "divider" && normalizedDividerIndex === null) {
+          return;
+        }
 
           const targetSubpanelAlreadyHasArrows =
             normalizedPlacement !== "divider" &&
@@ -3960,17 +4774,23 @@ const app = (function () {
           arrow.placement = placement === "divider" ? "divider" : "subpanel";
 
           if (arrow.placement === "divider") {
-            arrow.dividerAfterSubPanelIndex = clamp(
-              dividerAfterSubPanelIndex,
-              0,
-              Math.max(0, sign.subPanels.length - 2)
+            const normalizedDividerIndex = getNearestVisibleAPLDividerIndex(
+              sign,
+              dividerAfterSubPanelIndex
             );
-            delete arrow.subPanelIndex;
+
+            if (normalizedDividerIndex === null) {
+              arrow.placement = "subpanel";
+              arrow.subPanelIndex = getAPLGroupStartForSubPanelIndex(sign, 0);
+              delete arrow.dividerAfterSubPanelIndex;
+            } else {
+              arrow.dividerAfterSubPanelIndex = normalizedDividerIndex;
+              delete arrow.subPanelIndex;
+            }
           } else {
-            arrow.subPanelIndex = clamp(
-              subPanelIndex,
-              0,
-              Math.max(0, sign.subPanels.length - 1)
+            arrow.subPanelIndex = getAPLGroupStartForSubPanelIndex(
+              sign,
+              clamp(subPanelIndex, 0, Math.max(0, sign.subPanels.length - 1))
             );
             delete arrow.dividerAfterSubPanelIndex;
           }
@@ -4053,15 +4873,24 @@ const app = (function () {
           }
         };
 
-        const count = sign.subPanels.length;
+        const aplGroups = getAPLSubpanelGroupsForSign(sign);
+        const count = aplGroups.length;
 
-        if (count === 2) {
+        if (count === 1) {
           makePresetArrow({
             kind: "UP",
             type: "APL_UP",
             flip: false,
             placement: "subpanel",
-            subPanelIndex: 0,
+            subPanelIndex: aplGroups[0]?.start || 0,
+          });
+        } else if (count === 2) {
+          makePresetArrow({
+            kind: "UP",
+            type: "APL_UP",
+            flip: false,
+            placement: "subpanel",
+            subPanelIndex: aplGroups[0].start,
           });
 
           makePresetArrow({
@@ -4069,7 +4898,7 @@ const app = (function () {
             type: "APL_TURN",
             flip: false,
             placement: "subpanel",
-            subPanelIndex: 1,
+            subPanelIndex: aplGroups[1].start,
           });
 
           makePresetArrow({
@@ -4077,7 +4906,7 @@ const app = (function () {
             type: "APL_UP_TURN",
             flip: false,
             placement: "divider",
-            dividerAfterSubPanelIndex: 0,
+            dividerAfterSubPanelIndex: aplGroups[0].end,
           });
         } else if (count === 3) {
           makePresetArrow({
@@ -4085,7 +4914,7 @@ const app = (function () {
             type: "APL_TURN",
             flip: true,
             placement: "subpanel",
-            subPanelIndex: 0,
+            subPanelIndex: aplGroups[0].start,
           });
 
           makePresetArrow({
@@ -4093,7 +4922,7 @@ const app = (function () {
             type: "APL_UP",
             flip: false,
             placement: "subpanel",
-            subPanelIndex: 1,
+            subPanelIndex: aplGroups[1].start,
           });
 
           makePresetArrow({
@@ -4101,7 +4930,7 @@ const app = (function () {
             type: "APL_TURN",
             flip: false,
             placement: "subpanel",
-            subPanelIndex: 2,
+            subPanelIndex: aplGroups[2].start,
           });
 
           makePresetArrow({
@@ -4109,7 +4938,7 @@ const app = (function () {
             type: "APL_UP_TURN",
             flip: true,
             placement: "divider",
-            dividerAfterSubPanelIndex: 0,
+            dividerAfterSubPanelIndex: aplGroups[0].end,
           });
 
           makePresetArrow({
@@ -4117,7 +4946,35 @@ const app = (function () {
             type: "APL_UP_TURN",
             flip: false,
             placement: "divider",
-            dividerAfterSubPanelIndex: 1,
+            dividerAfterSubPanelIndex: aplGroups[1].end,
+          });
+        } else {
+          aplGroups.forEach((group, groupIndex) => {
+            makePresetArrow({
+              kind:
+                groupIndex === 0
+                  ? "LEFT_TURN"
+                  : groupIndex === aplGroups.length - 1
+                    ? "RIGHT_TURN"
+                    : "UP",
+              type:
+                groupIndex === 0 || groupIndex === aplGroups.length - 1
+                  ? "APL_TURN"
+                  : "APL_UP",
+              flip: groupIndex === 0,
+              placement: "subpanel",
+              subPanelIndex: group.start,
+            });
+
+            if (groupIndex < aplGroups.length - 1) {
+              makePresetArrow({
+                kind: groupIndex === 0 ? "UP_LEFT" : "UP_RIGHT",
+                type: "APL_UP_TURN",
+                flip: groupIndex === 0,
+                placement: "divider",
+                dividerAfterSubPanelIndex: group.end,
+              });
+            }
           });
         }
 
@@ -4383,52 +5240,424 @@ const app = (function () {
     };
   };
 
-  const withTemporaryExportStyles = async (element, callback) => {
-    const oldInline = {
-      transform: element.style.transform,
-      transition: element.style.transition,
-      width: element.style.width,
-      minWidth: element.style.minWidth,
-      height: element.style.height,
-      overflow: element.style.overflow,
-      padding: element.style.padding,
-      background: element.style.background,
+  const readBlobAsDataUrl = (blob) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+  const inlineFontFaceUrls = async (cssText, baseHref) => {
+    if (!cssText || !cssText.includes("url(")) {
+      return cssText || "";
+    }
+
+    const replacements = [];
+    const urlRegex = /url\((['"]?)([^'")]+)\1\)/g;
+    let match;
+
+    while ((match = urlRegex.exec(cssText)) !== null) {
+      const fullMatch = match[0];
+      const rawUrl = String(match[2] || "").trim();
+
+      if (!rawUrl || rawUrl.startsWith("data:")) {
+        continue;
+      }
+
+      try {
+        const resolvedUrl = new URL(rawUrl, baseHref || document.baseURI).href;
+        const response = await fetch(resolvedUrl);
+
+        if (!response.ok) {
+          continue;
+        }
+
+        const dataUrl = await readBlobAsDataUrl(await response.blob());
+        replacements.push([fullMatch, `url(${dataUrl})`]);
+      } catch (error) {
+        // Leave this URL as-is if it cannot be read.
+      }
+    }
+
+    let inlinedCss = cssText;
+    for (const [from, to] of replacements) {
+      inlinedCss = inlinedCss.split(from).join(to);
+    }
+
+    return inlinedCss;
+  };
+
+  const getSafeExportFontEmbedCSS = async () => {
+    const fontFaceRules = [];
+
+    for (const sheet of Array.from(document.styleSheets)) {
+      let rules;
+
+      try {
+        rules = Array.from(sheet.cssRules || []);
+      } catch (error) {
+        // Skip cross-origin stylesheets, such as Google Material Symbols.
+        continue;
+      }
+
+      for (const rule of rules) {
+        if (rule.type === CSSRule.FONT_FACE_RULE) {
+          fontFaceRules.push({
+            cssText: rule.cssText,
+            baseHref: sheet.href || document.baseURI,
+          });
+        }
+      }
+    }
+
+    const inlinedRules = await Promise.all(
+      fontFaceRules.map((rule) =>
+        inlineFontFaceUrls(rule.cssText, rule.baseHref)
+      )
+    );
+
+    return inlinedRules.join("\n");
+  };
+  
+  const materializeExportBannerFirstLetters = (root) => {
+    if (!root) {
+      return () => {};
+    }
+
+    const bannerElements = Array.from(
+      root.querySelectorAll(".bannerA:not(.TOLL):not(.noIndent), .bannerB:not(.TOLL):not(.noIndent)")
+    );
+
+    const restoreCallbacks = [];
+
+    for (const bannerEl of bannerElements) {
+      const text = bannerEl.textContent || "";
+
+      if (!text.trim()) {
+        continue;
+      }
+
+      const firstVisibleMatch = text.match(/\S/);
+
+      if (!firstVisibleMatch) {
+        continue;
+      }
+
+      const baseStyle = window.getComputedStyle(bannerEl);
+      const firstLetterStyle = window.getComputedStyle(
+        bannerEl,
+        "::first-letter"
+      );
+
+      const originalHTML = bannerEl.innerHTML;
+      const originalClassName = bannerEl.className;
+
+      const firstIndex = firstVisibleMatch.index;
+      const beforeFirst = text.slice(0, firstIndex);
+      const firstLetter = text.charAt(firstIndex);
+      const afterFirst = text.slice(firstIndex + 1);
+
+      const firstLetterSpan = document.createElement("span");
+      firstLetterSpan.className = "exportBannerFirstLetter";
+      firstLetterSpan.textContent = firstLetter;
+
+      const copiedProperties = [
+        "fontFamily",
+        "fontSize",
+        "fontWeight",
+        "fontStyle",
+        "fontStretch",
+        "letterSpacing",
+        "lineHeight",
+        "color",
+        "textTransform",
+      ];
+
+      for (const property of copiedProperties) {
+        const value = firstLetterStyle[property];
+
+        if (value && value !== baseStyle[property]) {
+          firstLetterSpan.style[property] = value;
+        }
+      }
+
+      bannerEl.classList.add("exportRealFirstLetter");
+      bannerEl.replaceChildren();
+
+      if (beforeFirst) {
+        bannerEl.appendChild(document.createTextNode(beforeFirst));
+      }
+
+      bannerEl.appendChild(firstLetterSpan);
+
+      if (afterFirst) {
+        bannerEl.appendChild(document.createTextNode(afterFirst));
+      }
+
+      restoreCallbacks.push(() => {
+        bannerEl.className = originalClassName;
+        bannerEl.innerHTML = originalHTML;
+      });
+    }
+
+    return () => {
+      for (const restore of restoreCallbacks.reverse()) {
+        restore();
+      }
+    };
+  };
+
+
+  const isElementVisibleForExport = (node) => {
+    if (!node || !(node instanceof Element)) {
+      return false;
+    }
+
+    const style = window.getComputedStyle(node);
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      style.opacity === "0"
+    ) {
+      return false;
+    }
+
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+
+  const getElementAndDescendantBounds = (element) => {
+    const rects = [];
+    const addRect = (node) => {
+      if (!isElementVisibleForExport(node)) {
+        return;
+      }
+
+      const rect = node.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        rects.push(rect);
+      }
     };
 
-    element.classList.add("exportCaptureTarget");
-    element.style.transform = "none";
-    element.style.transition = "none";
-    element.style.overflow = "visible";
+    addRect(element);
+    element.querySelectorAll("*").forEach(addRect);
 
-    /*
-      When the post is hidden, getFile() returns #panelContainer.
-      This makes the export crop to the signs instead of the 30rem post area.
-    */
-    if (element.id === "panelContainer") {
-      element.style.width = "max-content";
-      element.style.minWidth = "max-content";
-      element.style.height = "max-content";
-      element.style.overflow = "visible";
-      element.style.background = "transparent";
-      element.style.padding = "0.75rem";
+    if (!rects.length) {
+      const fallbackRect = element.getBoundingClientRect();
+      return {
+        left: fallbackRect.left,
+        top: fallbackRect.top,
+        right: fallbackRect.right,
+        bottom: fallbackRect.bottom,
+        width: Math.max(fallbackRect.width, 1),
+        height: Math.max(fallbackRect.height, 1),
+      };
     }
+
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const right = Math.max(...rects.map((rect) => rect.right));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+
+    return {
+      left,
+      top,
+      right,
+      bottom,
+      width: Math.max(right - left, 1),
+      height: Math.max(bottom - top, 1),
+    };
+  };
+
+  const getExportCloneSourceElements = (element) => {
+    if (!element) {
+      return [];
+    }
+
+    if (element.id === "panelContainer") {
+      return Array.from(element.children).filter(
+        (child) => child.classList && child.classList.contains("panel")
+      );
+    }
+
+    if (element.id === "postContainer") {
+      const panelContainer = element.querySelector("#panelContainer");
+      const panels = panelContainer
+        ? Array.from(panelContainer.children).filter(
+            (child) => child.classList && child.classList.contains("panel")
+          )
+        : [];
+      const posts = Array.from(element.children).filter(
+        (child) => child.classList && child.classList.contains("post") && isElementVisibleForExport(child)
+      );
+
+      return [...posts, ...panels];
+    }
+
+    return [element];
+  };
+
+  const getExportLayoutScale = (element) => {
+    if (!element) {
+      return 1;
+    }
+
+    const rect = element.getBoundingClientRect();
+    const layoutWidth = element.offsetWidth || element.scrollWidth || 0;
+    const layoutHeight = element.offsetHeight || element.scrollHeight || 0;
+
+    const scaleX =
+      layoutWidth > 0 && rect.width > 0 ? rect.width / layoutWidth : 1;
+    const scaleY =
+      layoutHeight > 0 && rect.height > 0 ? rect.height / layoutHeight : scaleX;
+
+    const scales = [scaleX, scaleY].filter(
+      (value) => Number.isFinite(value) && value > 0
+    );
+
+    if (!scales.length) {
+      return 1;
+    }
+
+    return Math.max(0.01, Math.min(...scales));
+  };
+
+  const createStaticExportClone = (element) => {
+    if (!element || !element.isConnected) {
+      return null;
+    }
+
+    const sourceElements = getExportCloneSourceElements(element).filter(
+      isElementVisibleForExport
+    );
+
+    if (!sourceElements.length) {
+      return null;
+    }
+
+    const layoutScale = getExportLayoutScale(element);
+    const normalizeMeasurement = (value) => value / layoutScale;
+
+    const rects = [];
+    for (const sourceElement of sourceElements) {
+      const bounds = getElementAndDescendantBounds(sourceElement);
+      rects.push(bounds);
+    }
+
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const right = Math.max(...rects.map((rect) => rect.right));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    const padding = 12;
+
+    const exportWidth = Math.ceil(normalizeMeasurement(right - left) + padding * 2);
+    const exportHeight = Math.ceil(normalizeMeasurement(bottom - top) + padding * 2);
+
+    const host = document.createElement("div");
+    host.className = "exportStaticCaptureHost";
+    host.style.position = "fixed";
+    host.style.left = "calc(100vw + 100px)";
+    host.style.top = "0";
+    host.style.width = exportWidth + "px";
+    host.style.height = exportHeight + "px";
+    host.style.overflow = "hidden";
+    host.style.background = "transparent";
+    host.style.pointerEvents = "none";
+    host.style.zIndex = "0";
+    host.style.boxSizing = "border-box";
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "exportStaticCaptureWrapper";
+    wrapper.style.position = "relative";
+    wrapper.style.left = "0";
+    wrapper.style.top = "0";
+    wrapper.style.width = exportWidth + "px";
+    wrapper.style.height = exportHeight + "px";
+    wrapper.style.overflow = "hidden";
+    wrapper.style.background = "transparent";
+    wrapper.style.pointerEvents = "none";
+    wrapper.style.boxSizing = "border-box";
+
+    sourceElements.forEach((sourceElement) => {
+      const sourceRect = sourceElement.getBoundingClientRect();
+      const clone = sourceElement.cloneNode(true);
+
+      clone.classList.add("exportStaticCaptureClone");
+      clone.style.position = "absolute";
+      clone.style.left = normalizeMeasurement(sourceRect.left - left) + padding + "px";
+      clone.style.top = normalizeMeasurement(sourceRect.top - top) + padding + "px";
+      clone.style.width = normalizeMeasurement(sourceRect.width) + "px";
+      clone.style.height = normalizeMeasurement(sourceRect.height) + "px";
+      clone.style.margin = "0";
+      clone.style.transform = "none";
+      clone.style.transition = "none";
+      clone.style.pointerEvents = "none";
+
+      wrapper.appendChild(clone);
+    });
+
+    host.appendChild(wrapper);
+    document.body.appendChild(host);
+
+    return {
+      node: wrapper,
+      cleanup: () => host.remove(),
+    };
+  };
+
+  const withTemporaryExportStyles = async (element, callback) => {
+    const staticClone = createStaticExportClone(element);
+    const exportElement = staticClone ? staticClone.node : element;
+    const oldInline = staticClone
+      ? null
+      : {
+          transform: element.style.transform,
+          transition: element.style.transition,
+          width: element.style.width,
+          minWidth: element.style.minWidth,
+          height: element.style.height,
+          overflow: element.style.overflow,
+          padding: element.style.padding,
+          background: element.style.background,
+        };
+
+    if (!staticClone) {
+      element.classList.add("exportCaptureTarget");
+      element.style.transform = "none";
+      element.style.transition = "none";
+      element.style.overflow = "visible";
+    }
+
+    let restoreExportBannerFirstLetters = () => {};
 
     try {
       await waitForNextFrame();
-      await waitForImagesInElement(element);
+
+      restoreExportBannerFirstLetters =
+        materializeExportBannerFirstLetters(exportElement);
+
       await waitForNextFrame();
-      const box = getExportBox(element);
-      return await callback(box);
+      await waitForImagesInElement(exportElement);
+      await waitForNextFrame();
+      const box = getExportBox(exportElement);
+      return await callback(box, exportElement);
     } finally {
-      element.classList.remove("exportCaptureTarget");
-      element.style.transform = oldInline.transform;
-      element.style.transition = oldInline.transition;
-      element.style.width = oldInline.width;
-      element.style.minWidth = oldInline.minWidth;
-      element.style.height = oldInline.height;
-      element.style.overflow = oldInline.overflow;
-      element.style.padding = oldInline.padding;
-      element.style.background = oldInline.background;
+      restoreExportBannerFirstLetters();
+
+      if (staticClone) {
+        staticClone.cleanup();
+      } else {
+        element.classList.remove("exportCaptureTarget");
+        element.style.transform = oldInline.transform;
+        element.style.transition = oldInline.transition;
+        element.style.width = oldInline.width;
+        element.style.minWidth = oldInline.minWidth;
+        element.style.height = oldInline.height;
+        element.style.overflow = oldInline.overflow;
+        element.style.padding = oldInline.padding;
+        element.style.background = oldInline.background;
+      }
     }
   };
 
@@ -4438,12 +5667,13 @@ const app = (function () {
         throw new Error("No export target found");
       }
 
-      return await withTemporaryExportStyles(file, async ({ width, height }) => {
+      return await withTemporaryExportStyles(file, async ({ width, height }, exportElement) => {
         const exportOptions = {
           cacheBust: true,
           width,
           height,
           backgroundColor: "transparent",
+          fontEmbedCSS: await getSafeExportFontEmbedCSS(),
           style: {
             transform: "none",
             transition: "none",
@@ -4451,7 +5681,7 @@ const app = (function () {
         };
 
         if (isSVG) {
-          const svgDataUrl = await htmlToImage.toSvg(file, exportOptions);
+          const svgDataUrl = await htmlToImage.toSvg(exportElement, exportOptions);
 
           if (isPreview) {
             return svgDataUrl;
@@ -4461,12 +5691,9 @@ const app = (function () {
           return true;
         }
 
-        const pngExportScale =
-          !isPreview && fileInfo.panel !== -1
-            ? 4
-            : 1;
+        const pngExportScale = getExportPixelRatio(width, height, isPreview);
 
-        const pngDataUrl = await htmlToImage.toPng(file, {
+        const pngDataUrl = await htmlToImage.toPng(exportElement, {
           ...exportOptions,
           pixelRatio: pngExportScale,
         });
@@ -4671,11 +5898,11 @@ const app = (function () {
       );
     }
 
-    var index = -1;
     var firstExitTab = null;
+    let currentPanelStackElmt = null;
 
-      for (const panel of post.panels) {
-          index++;
+      for (let index = 0; index < post.panels.length; index++) {
+          const panel = post.panels[index];
           
           const panelElmt = document.createElement("div");
           panelElmt.className = `panel ${panel.color.toLowerCase()} ${panel.corner.toLowerCase()}`;
@@ -4709,7 +5936,34 @@ const app = (function () {
           panelElmt.draggable = post.panels.length > 1;
           panelElmt.addEventListener("dragstart", handleRenderedPanelDragStart);
           panelElmt.addEventListener("dragend", handleRenderedPanelDragEnd);
-          panelContainerElmt.appendChild(panelElmt);
+
+          const isBottomStackedPanel =
+            index > 0 && panel.stackedWithPrevious === true;
+          const nextPanelIsStackedUnderThis =
+            index + 1 < post.panels.length &&
+            post.panels[index + 1]?.stackedWithPrevious === true;
+
+          if (isBottomStackedPanel && currentPanelStackElmt) {
+            panelElmt.classList.add("stackedPanelBottom");
+            currentPanelStackElmt.appendChild(panelElmt);
+          } else if (nextPanelIsStackedUnderThis) {
+            currentPanelStackElmt = document.createElement("div");
+            const stackedPanelSettings = getStackedPanelSettingsForTopIndex(index);
+            currentPanelStackElmt.className =
+              "panelStack" +
+              (stackedPanelSettings.matchWidth ? " stackedPanelMatchWidth" : "");
+            currentPanelStackElmt.dataset.stackTopPanelIndex = String(index);
+            currentPanelStackElmt.style.setProperty(
+              "--stackedPanelSpacing",
+              stackedPanelSettings.spacing + "rem"
+            );
+            panelElmt.classList.add("stackedPanelTop");
+            panelContainerElmt.appendChild(currentPanelStackElmt);
+            currentPanelStackElmt.appendChild(panelElmt);
+          } else {
+            currentPanelStackElmt = null;
+            panelContainerElmt.appendChild(panelElmt);
+          }
           
           // Store CA style exit tabs to append inside sign later
           const caStyleExitTabs = [];
@@ -5320,9 +6574,9 @@ const app = (function () {
                i: index (table parent)
                p: parent (object)
                */
-              
+            
               var position;
-              
+        
               for (const shield of i) {
                   if (
                       shield.bannerPosition != "Above" &&
@@ -5745,6 +6999,82 @@ const app = (function () {
           g_bottom.dataset.subpanelIndex = String(GLOBAL_BOTTOM_SUBPANEL_INDEX);
           g_bottom.dataset.globalPosition = "Bottom";
           signElmt.appendChild(g_bottom);
+
+          const markSelectedRenderedSubpanel = (targetElmt, subPanelIndex) => {
+            targetElmt.classList.toggle(
+              "selectedRenderedSubpanel",
+              index === currentlySelectedPanelIndex &&
+                subPanelIndex === currentlySelectedSubPanelIndex
+            );
+          };
+
+          const bindRenderedBlockSelection = (blockMasterElmt, subPanelIndex) => {
+            if (!blockMasterElmt) {
+              return;
+            }
+
+            blockMasterElmt.dataset.panelIndex = String(index);
+            blockMasterElmt.dataset.subpanel = String(subPanelIndex);
+
+            const rows = Array.from(
+              blockMasterElmt.querySelectorAll(".blockElementRow")
+            );
+
+            rows.forEach((rowElmt, rowIndex) => {
+              rowElmt.dataset.signRow = String(rowIndex);
+              rowElmt.classList.toggle(
+                "selectedRenderedBlockRow",
+                index === currentlySelectedPanelIndex &&
+                  subPanelIndex === currentlySelectedSubPanelIndex &&
+                  rowIndex === currentlySelectedRowIndex
+              );
+
+              rowElmt.addEventListener("click", (event) => {
+                if (event.target.closest("[data-sign-row][data-sign-block]")) {
+                  return;
+                }
+
+                event.stopPropagation();
+                selectRenderedPanelArea({
+                  panelIndex: index,
+                  subPanelIndex,
+                  rowIndex,
+                  blockIndex: 0,
+                  menu: "subpanel",
+                  flashTarget: rowElmt,
+                });
+              });
+            });
+
+            blockMasterElmt
+              .querySelectorAll("[data-sign-row][data-sign-block]")
+              .forEach((blockElmt) => {
+                const rowIndex = Number(blockElmt.dataset.signRow);
+                const blockIndex = Number(blockElmt.dataset.signBlock);
+
+                blockElmt.classList.toggle(
+                  "selectedRenderedBlockElement",
+                  index === currentlySelectedPanelIndex &&
+                    subPanelIndex === currentlySelectedSubPanelIndex &&
+                    rowIndex === currentlySelectedRowIndex &&
+                    blockIndex === currentlySelectedBlockIndex
+                );
+
+                blockElmt.addEventListener("click", (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+
+                  selectRenderedPanelArea({
+                    panelIndex: index,
+                    subPanelIndex,
+                    rowIndex: Number.isNaN(rowIndex) ? 0 : rowIndex,
+                    blockIndex: Number.isNaN(blockIndex) ? 0 : blockIndex,
+                    menu: "subpanel",
+                    flashTarget: blockElmt,
+                  });
+                });
+              });
+          };
         
           const renderGlobalBlockElements = () => {
             const renderGlobalBlocksForPosition = (position, targetElmt) => {
@@ -5782,7 +7112,31 @@ const app = (function () {
                 globalRenderTarget
               );
 
+              const globalIndex =
+                position === "Top"
+                  ? GLOBAL_TOP_SUBPANEL_INDEX
+                  : GLOBAL_BOTTOM_SUBPANEL_INDEX;
+
               globalBlockElement.classList.add("globalPanelBlockElements");
+              globalBlockElement.dataset.panelIndex = String(index);
+              globalBlockElement.dataset.subpanel = String(globalIndex);
+              bindRenderedBlockSelection(globalBlockElement, globalIndex);
+              markSelectedRenderedSubpanel(targetElmt, globalIndex);
+              targetElmt.addEventListener("click", (event) => {
+                if (event.target.closest("[data-sign-row][data-sign-block]")) {
+                  return;
+                }
+
+                event.stopPropagation();
+                selectRenderedPanelArea({
+                  panelIndex: index,
+                  subPanelIndex: globalIndex,
+                  rowIndex: 0,
+                  blockIndex: 0,
+                  menu: "subpanel",
+                  flashTarget: targetElmt,
+                });
+              });
               targetElmt.appendChild(globalBlockElement);
               targetElmt.classList.add("hasGlobalBlocks");
             };
@@ -5857,6 +7211,24 @@ const app = (function () {
           .replace("/", "-")
           .replace(" ", "_")
           .toLowerCase()} ${panel.sign.arrowPosition.toLowerCase()}`;
+          const standardGuideArrowSpacing = parseFloat(panel.sign.exitOnlyPadding);
+          const resolvedGuideArrowSpacing = Number.isFinite(standardGuideArrowSpacing)
+            ? standardGuideArrowSpacing
+            : 0.25;
+          guideArrowsElmt.style.setProperty(
+            "--guideArrowSpacing",
+            resolvedGuideArrowSpacing + "rem"
+          );
+          const applyGuideArrowVerticalSpacing = (element) => {
+            if (!element) {
+              return;
+            }
+
+            const spacingValue = resolvedGuideArrowSpacing + "rem";
+            element.style.setProperty("--guideArrowSpacing", spacingValue);
+            element.style.setProperty("padding-top", spacingValue, "important");
+            element.style.setProperty("padding-bottom", spacingValue, "important");
+          };
           
           if (panel.sign.arrowMode === "apl") {
               guideArrowsElmt.style.display = "none";
@@ -5915,34 +7287,32 @@ const app = (function () {
           const aplArrows =
             panel.sign.arrowMode === "apl" ? panel.sign.aplArrows || [] : [];
           
+          const aplSubpanelGroups = getAPLSubpanelGroupsForSign(panel.sign);
           const aplVisualArrowOrder = [];
-          
-          for (
-               let orderSubPanelIndex = 0;
-               orderSubPanelIndex < panel.sign.subPanels.length;
-               orderSubPanelIndex++
-               ) {
-                   aplArrows.forEach((arrow, index) => {
-                       if (
-                           arrow.placement !== "divider" &&
-                           arrow.subPanelIndex === orderSubPanelIndex
-                           ) {
-                               aplVisualArrowOrder.push(index);
-                           }
-                   });
-                   
-                   if (orderSubPanelIndex < panel.sign.subPanels.length - 1) {
-                       aplArrows.forEach((arrow, index) => {
-                           if (
-                               arrow.placement === "divider" &&
-                               arrow.dividerAfterSubPanelIndex === orderSubPanelIndex
-                               ) {
-                                   aplVisualArrowOrder.push(index);
-                               }
-                       });
-                   }
-               }
-          
+
+          aplSubpanelGroups.forEach((group, groupIndex) => {
+            aplArrows.forEach((arrow, index) => {
+              if (
+                arrow.placement !== "divider" &&
+                group.indices.includes(arrow.subPanelIndex)
+              ) {
+                aplVisualArrowOrder.push(index);
+              }
+            });
+
+            if (groupIndex < aplSubpanelGroups.length - 1) {
+              aplArrows.forEach((arrow, index) => {
+                if (
+                  arrow.placement === "divider" &&
+                  arrow.dividerAfterSubPanelIndex === group.end &&
+                  isSubpanelDividerVisibleForSign(panel.sign, group.end)
+                ) {
+                  aplVisualArrowOrder.push(index);
+                }
+              });
+            }
+          });
+
           const shouldRenderAPLSpacingAfter = (arrowIndex) => {
               const visualIndex = aplVisualArrowOrder.indexOf(arrowIndex);
               return visualIndex >= 0 && visualIndex < aplVisualArrowOrder.length - 1;
@@ -6137,59 +7507,35 @@ const app = (function () {
             return widthRem;
           };
 
-          const hasSubpanelTargetedAPLArrows = aplArrows.some(
-            (arrow) => typeof arrow.subPanelIndex === "number"
-          );
+          for (let ai = 0; ai < aplArrows.length; ai++) {
+            const arrow = aplArrows[ai];
 
-          if (hasSubpanelTargetedAPLArrows) {
-            for (let ai = 0; ai < aplArrows.length; ai++) {
-              const arrow = aplArrows[ai];
+            if (!arrow || arrow.placement === "divider") {
+              continue;
+            }
 
-              if (arrow.placement === "divider") {
-                continue;
-              }
+            const targetSubPanelIndex = getAPLGroupStartForSubPanelIndex(
+              panel.sign,
+              typeof arrow.subPanelIndex === "number" ? arrow.subPanelIndex : 0
+            );
 
-              const targetSubPanelIndex = clamp(
-                typeof arrow.subPanelIndex === "number" ? arrow.subPanelIndex : 0,
-                0,
-                Math.max(0, panel.sign.subPanels.length - 1)
-              );
-
+            if (targetSubPanelIndex >= 0 && targetSubPanelIndex < arrowGroups.length) {
               arrowGroups[targetSubPanelIndex].push({ arrow, index: ai });
             }
-          } else if (aplArrows.length > 0) {
-            // Backward compatibility for older saved signs that used divider-based grouping.
-            let currentGroup = [];
-            let targetSubPanelIndex = 0;
-
-            for (let ai = 0; ai < aplArrows.length; ai++) {
-              const arrow = aplArrows[ai];
-
-              if (arrow.placement === "divider") {
-                continue;
-              }
-
-              currentGroup.push({ arrow, index: ai });
-
-              if (arrow.dividerAfter && ai < aplArrows.length - 1) {
-                if (targetSubPanelIndex < arrowGroups.length) {
-                  arrowGroups[targetSubPanelIndex] = currentGroup;
-                }
-
-                currentGroup = [];
-                targetSubPanelIndex++;
-              }
-            }
-
-            if (currentGroup.length > 0 && targetSubPanelIndex < arrowGroups.length) {
-              arrowGroups[targetSubPanelIndex] = currentGroup;
-            }
           }
-          
-          const getAPLArrowGroup = (subPanelIndex) =>
-            arrowGroups.length > 0 && subPanelIndex >= 0 && subPanelIndex < arrowGroups.length
-              ? arrowGroups[subPanelIndex]
+
+          const getAPLArrowGroup = (subPanelIndex) => {
+            const groupStart = getAPLGroupStartForSubPanelIndex(
+              panel.sign,
+              subPanelIndex
+            );
+
+            return arrowGroups.length > 0 &&
+              groupStart >= 0 &&
+              groupStart < arrowGroups.length
+              ? arrowGroups[groupStart]
               : [];
+          };
 
           const isExitOnlyValue = (value) =>
             value === true ||
@@ -6221,6 +7567,10 @@ const app = (function () {
             ) {
               const leftSubPanelIndex = dividerSubPanelIndex - 1;
               const rightSubPanelIndex = dividerSubPanelIndex;
+
+              if (!isSubpanelDividerVisibleForSign(panel.sign, leftSubPanelIndex)) {
+                continue;
+              }
 
               const leftGroup = getAPLArrowGroup(leftSubPanelIndex);
               const rightGroup = getAPLArrowGroup(rightSubPanelIndex);
@@ -6333,7 +7683,10 @@ const app = (function () {
                    const subPanel = panel.sign.subPanels[subPanelIndex];
                    let locked = false;
                    
-                   if (subPanelIndex > 0) {
+                   if (
+                       subPanelIndex > 0 &&
+                       isSubpanelDividerVisibleForSign(panel.sign, subPanelIndex - 1)
+                    ) {
                        const subPanel = panel.sign.subPanels[subPanelIndex];
                        const subDivider = document.createElement("div");
                        subDivider.className = "subDivider";
@@ -6456,7 +7809,12 @@ const app = (function () {
                    new_subPanel.dataset.panelIndex = String(index);
                    new_subPanel.dataset.subpanelIndex = String(subPanelIndex);
                    
+                   markSelectedRenderedSubpanel(new_subPanel, subPanelIndex);
                    new_subPanel.addEventListener("click", (event) => {
+                       if (event.target.closest("[data-sign-row][data-sign-block]")) {
+                         return;
+                       }
+
                        event.stopPropagation();
                        
                        const clickedPanelIndex = Number(event.currentTarget.dataset.panelIndex);
@@ -6466,6 +7824,8 @@ const app = (function () {
                        selectRenderedPanelArea({
                            panelIndex: Number.isNaN(clickedPanelIndex) ? 0 : clickedPanelIndex,
                            subPanelIndex: Number.isNaN(clickedSubPanelIndex) ? 0 : clickedSubPanelIndex,
+                           rowIndex: 0,
+                           blockIndex: 0,
                            menu: guideArrowMenuOpen ? "none" : "subpanel",
                            flashTarget: event.currentTarget,
                        });
@@ -6509,7 +7869,9 @@ const app = (function () {
                                                                              panel,
                                                                              subPanel
                                                                              );
-                   blockElement.dataset.subpanel = subPanelIndex;
+                   blockElement.dataset.panelIndex = String(index);
+                   blockElement.dataset.subpanel = String(subPanelIndex);
+                   bindRenderedBlockSelection(blockElement, subPanelIndex);
                    signContentContainerElmt.appendChild(blockElement);
                    
                    // Shields
@@ -6752,7 +8114,9 @@ const app = (function () {
             const arrowContainerWidth = Math.ceil(
               Math.max(
                 arrowContElmt.scrollWidth || 0,
-                arrowContElmt.getBoundingClientRect().width || 0
+                arrowContElmt.getBoundingClientRect().width || 0,
+                guideArrowsElmt?.scrollWidth || 0,
+                guideArrowsElmt?.getBoundingClientRect().width || 0
               )
             );
 
@@ -6761,19 +8125,32 @@ const app = (function () {
             }
 
             const currentSubpanelGroupWidth = Math.ceil(
-              signHolderElmt.getBoundingClientRect().width || 0
+              Math.max(
+                signHolderElmt.scrollWidth || 0,
+                signHolderElmt.getBoundingClientRect().width || 0
+              )
+            );
+
+            const desiredSubpanelGroupWidth = Math.max(
+              arrowContainerWidth,
+              currentSubpanelGroupWidth
             );
 
             if (arrowContainerWidth > currentSubpanelGroupWidth + 1) {
               signHolderElmt.classList.add("hasStandardGuideArrowWidthReserve");
               signHolderElmt.style.setProperty(
                 "--standardGuideArrowMinWidth",
-                `${arrowContainerWidth}px`
+                `${desiredSubpanelGroupWidth}px`
               );
+              signHolderElmt.style.width = `${desiredSubpanelGroupWidth}px`;
+              signHolderElmt.style.minWidth = `${desiredSubpanelGroupWidth}px`;
             } else {
               signHolderElmt.classList.remove("hasStandardGuideArrowWidthReserve");
               signHolderElmt.style.removeProperty("--standardGuideArrowMinWidth");
+              signHolderElmt.style.removeProperty("width");
+              signHolderElmt.style.removeProperty("min-width");
             }
+
             const standardDividers = Array.from(
               signHolderElmt.querySelectorAll(":scope > .subDivider")
             );
@@ -6832,7 +8209,10 @@ const app = (function () {
             });
           };
 
-          requestAnimationFrame(apply);
+          requestAnimationFrame(() => {
+            apply();
+            requestAnimationFrame(apply);
+          });
 
           arrowContElmt.querySelectorAll("img").forEach((img) => {
             if (!img.complete) {
@@ -6882,23 +8262,49 @@ const app = (function () {
               } else {
                   key = key.split("/")[0];
               }
-              
+
+              key = String(key || "").trim();
+
+              const specialGuideArrowBlocks = {
+                  DOWN_CA: {
+                      src: "img/arrowBlocks/DOWN_CA.svg",
+                      className: "canadianDownArrow",
+                  },
+                  DOWN_IL: {
+                      src: "img/arrowBlocks/DOWN_IL.svg",
+                      className: "illinoisDownArrow",
+                  },
+              };
+
+              if (specialGuideArrowBlocks[key]) {
+                  const specialArrowElmt = document.createElement("img");
+                  specialArrowElmt.className = name || "exitOnlyArrow ";
+
+                  if (extra) {
+                      specialArrowElmt.className += " " + extra;
+                  }
+
+                  specialArrowElmt.src = specialGuideArrowBlocks[key].src;
+                  specialArrowElmt.classList.add(specialGuideArrowBlocks[key].className, "downarrow");
+                  return specialArrowElmt;
+              }
+
               if (
                   ExitKeys.includes(key.split("-")[0]) ||
                   MainKeys.includes(key.split("-")[0])
                   ) {
                       const downArrowElmt = document.createElement("img");
                       downArrowElmt.className = name || "exitOnlyArrow ";
-                      
+
                       if (extra) {
                           downArrowElmt.className += " " + extra;
                       }
-                      
+
                       if (ExitKeys.includes(key.split("-")[0])) {
                           key = key.split("-")[0].split("")[1] + "-" + key.split("-")[1];
                           downArrowElmt.style.filter = "invert(1)";
                       }
-                      
+
                       if (qcExitMarkerMode) {
                           downArrowElmt.src = "img/arrows/QC_EXIT_RIGHT.svg";
                           downArrowElmt.classList.add("qcExitOnlyArrow");
@@ -6912,21 +8318,21 @@ const app = (function () {
 
                           return downArrowElmt;
                       }
-                      
+
                       const shouldUseCanadianDownArrow =
                       panel.sign.useCanadianDownArrows && key === "C-1";
-                      
+
                       if (shouldUseCanadianDownArrow) {
                           downArrowElmt.src = "img/arrowBlocks/DOWN_CA.svg";
                           downArrowElmt.classList.add("canadianDownArrow");
                       } else {
                           downArrowElmt.src = "img/arrows/" + key + ".svg";
                       }
-                      
+
                       return downArrowElmt;
                   }
           };
-          
+
         const canAlignStandardGuideArrow =
           panel.sign.guideArrow != "Exit Only" &&
           panel.sign.guideArrow != "Side Left" &&
@@ -7047,6 +8453,7 @@ const app = (function () {
                     .replace("/", "-")
                     .replace(" ", "_")
                     .toLowerCase()} ${halfExitRenderPositionLower}`;
+                  applyGuideArrowVerticalSpacing(secondaryContainer);
                   
                   guideArrowsElmt.className += post.secondExitOnly
                   ? " new2"
@@ -7150,6 +8557,7 @@ const app = (function () {
                   halfExitGuideLane.className = `arrowContainer halfExitGuideLane ${
                     halfExitRenderPositionLower === "left" ? "right" : "left"
                   }`;
+                  applyGuideArrowVerticalSpacing(halfExitGuideLane);
 
                   const arrow = createArrowElmt(
                     panel.sign.exitguideArrows.split(":")[1],
@@ -7177,7 +8585,7 @@ const app = (function () {
                     arrowContElmt.appendChild(secondaryContainer);
                   }
 
-                  path.style.padding = panel.sign.exitOnlyPadding + "rem";
+                  applyGuideArrowVerticalSpacing(path);
               } else {
                   path = arrowContElmt;
               }
@@ -7230,7 +8638,7 @@ const app = (function () {
                       
                       if (post.secondExitOnly && panel.sign.guideArrow == "Exit Only") {
                           console.log("hi");
-                          path.style.padding = panel.sign.exitOnlyPadding + "rem";
+                          applyGuideArrowVerticalSpacing(path);
                       }
                       
                       /*
@@ -7539,6 +8947,8 @@ const app = (function () {
                           }
                   } else {
                       arrowContElmt.classList.remove("hideExitOnlyArrows");
+                      guideArrowsElmt.style.paddingTop = resolvedGuideArrowSpacing + "rem";
+                      guideArrowsElmt.style.paddingBottom = resolvedGuideArrowSpacing + "rem";
                       for (
                            let arrowIndex = 0, length = panel.sign.guideArrowLanes;
                            arrowIndex < length;
@@ -7743,10 +9153,14 @@ const app = (function () {
         getCurrentBlockRows,
         getCurrentBlockElem,
         getPost: () => post,
+        getCurrentStackedPanelInfo,
+        setStackedPanelSpacing,
+        setStackedPanelMatchWidth,
         checkSpecialShield,
         redraw,
         setSelectedRow,
         setSelectedControlElem,
+        setSelectedRowAndBlock,
         replaceControlElemTypeAt,
         beginUndoableChange,
         endUndoableChange,
@@ -7771,6 +9185,9 @@ const app = (function () {
         newNestExitTab: (...args) => runWithUndo(() => newNestExitTab(...args)),
         deleteNestExitTab: (...args) => runWithUndo(() => deleteNestExitTab(...args)),
         setPanelSpacing: setPanelSpacing,
+        setSubpanelDividerVisible,
+        isSubpanelDividerVisible,
+        getAPLSubpanelGroups: getAPLSubpanelGroupsForCurrentPanel,
         duplicateBlockIntoNewRow: (...args) =>
         runWithUndo(() => duplicateBlockIntoNewRow(...args)),
         deleteShield: (...args) => runWithUndo(() => deleteShield(...args)),
@@ -7838,6 +9255,7 @@ const app = (function () {
 
   // Template management functions
   let templateDB = null;
+  const TEMPLATE_LOAD_WARNING_STORAGE_KEY = "signMaker.templateLoadWarning";
 
   const initTemplateDB = async function () {
     if (!templateDB) {
@@ -7847,7 +9265,129 @@ const app = (function () {
     return templateDB;
   };
 
-  const saveTemplate = async function (templateName) {
+  const getTemplateLoadWarningEnabled = function () {
+    try {
+      return window.localStorage.getItem(TEMPLATE_LOAD_WARNING_STORAGE_KEY) === "true";
+    } catch (error) {
+      return false;
+    }
+  };
+
+  const setTemplateLoadWarningEnabled = function (enabled) {
+    try {
+      window.localStorage.setItem(
+        TEMPLATE_LOAD_WARNING_STORAGE_KEY,
+        enabled ? "true" : "false"
+      );
+    } catch (error) {
+      console.warn("Unable to save template load warning setting", error);
+    }
+  };
+
+  const addTemplateElementTypes = (obj, visited = new WeakSet()) => {
+    if (!obj || typeof obj !== "object" || visited.has(obj)) {
+      return;
+    }
+
+    visited.add(obj);
+
+    if (Array.isArray(obj)) {
+      obj.forEach((item) => addTemplateElementTypes(item, visited));
+      return;
+    }
+
+    if (Control.prototype.blockToClassElems) {
+      try {
+        const elemType = Control.prototype.blockToClassElems.getElem?.(obj);
+        if (elemType) {
+          obj._elementType = elemType;
+        }
+      } catch (error) {
+        // Not a block element instance.
+      }
+    }
+
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key) && key !== "_elementType") {
+        addTemplateElementTypes(obj[key], visited);
+      }
+    }
+  };
+
+  const removeTemplateElementTypes = (obj, visited = new WeakSet()) => {
+    if (!obj || typeof obj !== "object" || visited.has(obj)) {
+      return;
+    }
+
+    visited.add(obj);
+
+    if (Array.isArray(obj)) {
+      obj.forEach((item) => removeTemplateElementTypes(item, visited));
+      return;
+    }
+
+    if (obj._elementType) {
+      delete obj._elementType;
+    }
+
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        removeTemplateElementTypes(obj[key], visited);
+      }
+    }
+  };
+
+  const serializeTemplateData = function (scope = "post") {
+    if (!post || !Array.isArray(post.panels) || post.panels.length === 0) {
+      throw new Error("There is no sign to save.");
+    }
+
+    addTemplateElementTypes(post);
+
+    let snapshot;
+    try {
+      snapshot = JSON.parse(JSON.stringify(post));
+    } finally {
+      removeTemplateElementTypes(post);
+    }
+
+    if (scope === "panel") {
+      const selectedPanel = snapshot.panels?.[currentlySelectedPanelIndex];
+      if (!selectedPanel) {
+        throw new Error("There is no selected panel to save.");
+      }
+
+      snapshot.panels = [selectedPanel];
+    }
+
+    return JSON.stringify(snapshot, null, 2);
+  };
+
+  const getTemplatePanelsFromData = function (template) {
+    if (!template || typeof template.data !== "string") {
+      return [];
+    }
+
+    const parsedPostData = JSON.parse(template.data);
+    const rebuiltPost = reconstructPostFromSnapshot(parsedPostData);
+
+    if (!rebuiltPost || !Array.isArray(rebuiltPost.panels)) {
+      return [];
+    }
+
+    return rebuiltPost.panels;
+  };
+
+  const getTemplatePostFromData = function (template) {
+    if (!template || typeof template.data !== "string") {
+      return null;
+    }
+
+    const parsedPostData = JSON.parse(template.data);
+    return reconstructPostFromSnapshot(parsedPostData);
+  };
+
+  const saveTemplate = async function (templateName, scope = "post") {
     if (!templateName || templateName.trim() === "") {
       alert("Please enter a template name");
       return;
@@ -7855,81 +9395,24 @@ const app = (function () {
 
     try {
       const db = await initTemplateDB();
-      
-      // Add element type information to Control elements before serialization
-      const addElementTypes = (obj, visited = new WeakSet()) => {
-        if (!obj || typeof obj !== "object" || visited.has(obj)) {
-          return;
-        }
-        
-        visited.add(obj);
-        
-        if (Array.isArray(obj)) {
-          obj.forEach(item => addElementTypes(item, visited));
-          return;
-        }
-        
-        // Check if this is a Control element
-        if (Control.prototype.blockToClassElems) {
-          try {
-            const elemType = Control.prototype.blockToClassElems.getElem?.(obj);
-            if (elemType) {
-              obj._elementType = elemType;
-            }
-          } catch (e) {
-            // Not an element instance, continue
-          }
-        }
-        
-        // Recursively process all properties
-        for (const key in obj) {
-          if (obj.hasOwnProperty(key) && key !== "_elementType") {
-            addElementTypes(obj[key], visited);
-          }
-        }
-      };
-      
-      // Add element types to the post (modifies in place, but that's OK for serialization)
-      addElementTypes(post);
-      
-      // Serialize the entire post with element type information
-      const postData = JSON.stringify(post, null, 2);
-      
-      // Clean up the _elementType properties we added (optional, but cleaner)
-      const removeElementTypes = (obj, visited = new WeakSet()) => {
-        if (!obj || typeof obj !== "object" || visited.has(obj)) {
-          return;
-        }
-        visited.add(obj);
-        if (Array.isArray(obj)) {
-          obj.forEach(item => removeElementTypes(item, visited));
-          return;
-        }
-        if (obj._elementType) {
-          delete obj._elementType;
-        }
-        for (const key in obj) {
-          if (obj.hasOwnProperty(key)) {
-            removeElementTypes(obj[key], visited);
-          }
-        }
-      };
-      removeElementTypes(post);
-      
+      const normalizedScope = scope === "panel" ? "panel" : "post";
+      const postData = serializeTemplateData(normalizedScope);
+
       const templateData = {
         name: templateName.trim(),
         data: postData,
+        templateScope: normalizedScope,
         dateCreated: new Date().toISOString(),
+        dateModified: new Date().toISOString(),
       };
 
       await db.saveTemplate(templateData);
-      
-      // Clear the input field
+
       const templateNameInput = document.getElementById("templateNameInput");
       if (templateNameInput) {
         templateNameInput.value = "";
       }
-      
+
       await refreshTemplatesList();
     } catch (error) {
       console.error("Error saving template:", error);
@@ -7937,210 +9420,154 @@ const app = (function () {
     }
   };
 
-  const loadTemplate = async function (templateId) {
+  const savePanelTemplate = function (templateName) {
+    return saveTemplate(templateName, "panel");
+  };
+
+  const savePostTemplate = function (templateName) {
+    return saveTemplate(templateName, "post");
+  };
+
+  const normalizeTemplateLoadMode = (mode) => {
+    const normalized = String(mode || "replace-post").toLowerCase();
+    if (normalized === "replace-panel" || normalized === "add") {
+      return normalized;
+    }
+    return "replace-post";
+  };
+
+  const getTemplateLoadConfirmationMessage = (mode) => {
+    if (mode === "replace-panel") {
+      return "Are you sure you want to load this template? THIS WILL REPLACE THE SELECTED PANEL!";
+    }
+
+    return "Are you sure you want to load this template? THIS WILL REPLACE YOUR CURRENT SIGN!";
+  };
+
+  const loadTemplate = async function (templateId, mode = "replace-post") {
     if (!templateId) {
       return;
     }
 
-    const confirmationMessage =
-      "Are you sure you want to load this template? THIS WILL REPLACE YOUR CURRENT SIGN!";
-    if (!window.confirm(confirmationMessage)) {
+    const loadMode = normalizeTemplateLoadMode(mode);
+
+    if (
+      loadMode !== "add" &&
+      getTemplateLoadWarningEnabled() &&
+      !window.confirm(getTemplateLoadConfirmationMessage(loadMode))
+    ) {
       return;
     }
 
     try {
       const db = await initTemplateDB();
       const template = await db.getTemplate(templateId);
-      
+
       if (!template) {
         alert("Template not found");
         return;
       }
 
-      // Deserialize and restore the post
-      const postData = JSON.parse(template.data);
-      
-      // Helper function to reconstruct Control blockElements
-      const reconstructControl = (controlData) => {
-        if (!controlData) {
-          return new Control();
+      if (loadMode === "replace-post") {
+        const newPost = getTemplatePostFromData(template);
+
+        if (!newPost) {
+          alert("Template could not be loaded.");
+          return;
         }
-        
-        const control = new Control();
-        const rows = [];
-        const blockProperties = [];
-        
-        if (Array.isArray(controlData.rows)) {
-          for (const rowData of controlData.rows) {
-            const row = [];
-            if (Array.isArray(rowData)) {
-              for (const elemData of rowData) {
-                // Use stored element type or try to infer
-                let elemType = elemData._elementType;
-                
-                if (!elemType && Control.prototype.blockToClassElems) {
-                  // Try to infer from properties
-                  if (elemData.icon !== undefined) {
-                    elemType = "IconElement";
-                  } else if (elemData.arrow !== undefined) {
-                    elemType = "ArrowElement";
-                  } else if (elemData.logo !== undefined || elemData.tollLogo !== undefined) {
-                    elemType = "TollLogoElement";
-                  } else if (elemData.shieldBase !== undefined || elemData.type !== undefined) {
-                    elemType = "ShieldElement";
-                  } else if (elemData.dividerWidth !== undefined) {
-                    elemType = "DividerElement";
-                  } else if (elemData.beacon !== undefined || elemData.size !== undefined && elemData.color !== undefined && !elemData.textContent) {
-                    elemType = "BeaconElement";
-                  } else if (elemData.textContent !== undefined) {
-                    // Distinguish between ControlText, Advisory, ActionMessage, ElectronicSign
-                    if (elemData.glow !== undefined) {
-                      elemType = "ElectronicSignElement";
-                    } else if (elemData.borderRadius !== undefined && elemData.horizPadding !== undefined) {
-                      elemType = "AdvisoryMessageElement";
-                    } else if (elemData.spacing !== undefined) {
-                      elemType = "ControlTextElement";
-                    } else {
-                      elemType = "ActionMessageElement";
-                    }
-                  }
-                }
-                
-                if (elemType && Control.prototype.blockToClassElems && Control.prototype.blockToClassElems[elemType]) {
-                  const ElemClass = Control.prototype.blockToClassElems[elemType];
-                  const elem = new ElemClass(elemData);
-                  Object.assign(elem, elemData);
-                  delete elem._elementType; // Remove the helper property
-                  row.push(elem);
-                } else {
-                  console.warn("Could not reconstruct element:", elemData);
-                }
-              }
-            }
-            rows.push(row);
-            
-            // Reconstruct Block
-            const blockIndex = rows.length - 1;
-            const blockData = controlData.blockProperties?.[blockIndex];
-            if (blockData) {
-              const block = new Block(blockData);
-              Object.assign(block, blockData);
-              blockProperties.push(block);
-            } else {
-              blockProperties.push(new Block());
-            }
-          }
-        }
-        
-        control.rows = rows;
-        control.blockProperties = blockProperties;
-        return control;
-      };
-      
-      // Create a new Post instance and copy properties
-        const newPost = new Post(
-          postData.polePosition || "Right",
-          postData.lanesWide || 1,
-          postData.color || Post.prototype.colors[0]
-        );
-      
-      // Copy additional post properties
-      if (typeof postData.panelSpacing === "number") {
-        newPost.panelSpacing = postData.panelSpacing;
+
+        beginUndoableChange();
+        post = newPost;
+        normalizeSelectionForCurrentPost();
+        currentlySelectedPanelIndex = 0;
+        currentlySelectedSubPanelIndex = 0;
+        currentlySelectedRowIndex = 0;
+        currentlySelectedBlockIndex = 0;
+        formHandler.updateForm();
+        redraw();
+        endUndoableChange();
+        return;
       }
-      if (typeof postData.thickness === "number") {
-        newPost.thickness = postData.thickness;
+
+      const templatePanels = getTemplatePanelsFromData(template);
+
+      if (!templatePanels.length) {
+        alert("Template does not contain any panels.");
+        return;
       }
-      if (typeof postData.showPost === "boolean") {
-        newPost.showPost = postData.showPost;
+
+      beginUndoableChange();
+
+      const selectedIndex = clamp(
+        currentlySelectedPanelIndex,
+        0,
+        Math.max(0, post.panels.length - 1)
+      );
+
+      if (loadMode === "replace-panel") {
+        post.panels.splice(selectedIndex, 1, ...templatePanels);
+        currentlySelectedPanelIndex = selectedIndex;
+      } else {
+        post.panels.splice(selectedIndex + 1, 0, ...templatePanels);
+        currentlySelectedPanelIndex = selectedIndex + 1;
       }
-      if (typeof postData.disableFlash === "boolean") {
-        newPost.disableFlash = postData.disableFlash;
-      }
-      if (typeof postData.secondExitOnly === "boolean") {
-        newPost.secondExitOnly = postData.secondExitOnly;
-      }
-      
-      // Restore panels
-      if (Array.isArray(postData.panels)) {
-        newPost.panels = [];
-        for (const panelData of postData.panels) {
-          // Restore subpanels first (needed for Sign constructor)
-          const subPanels = [];
-          if (Array.isArray(panelData.sign?.subPanels)) {
-            for (const subPanelData of panelData.sign.subPanels) {
-              // Reconstruct blockElements
-              const blockElements = reconstructControl(subPanelData.blockElements);
-              
-              const subPanel = new SubPanels({
-                ...subPanelData,
-                blockElements: blockElements
-              });
-              Object.assign(subPanel, subPanelData);
-              subPanel.blockElements = blockElements; // Ensure it's set
-              subPanels.push(subPanel);
-            }
-          }
-          
-          // Create sign with subpanels
-          const signData = panelData.sign || {};
-          const sign = new Sign({
-            ...signData,
-            subPanels: subPanels
-          });
-          
-          // Restore shields
-          if (Array.isArray(signData.shields)) {
-            sign.shields = signData.shields.map((shieldData) => {
-              const shield = new Shield(shieldData);
-              Object.assign(shield, shieldData);
-              return shield;
-            });
-          }
-          
-          // Copy other sign properties
-          Object.assign(sign, signData);
-          sign.subPanels = subPanels; // Ensure subpanels are set
-          
-          // Create panel
-          const panel = new Panel(
-            sign,
-            panelData.color,
-            [],
-            panelData.corner,
-            panelData.borderRadius
-          );
-          
-          // Restore exit tabs
-          if (Array.isArray(panelData.exitTabs)) {
-            panel.exitTabs = panelData.exitTabs.map((exitTabData) => {
-              const exitTab = new ExitTab(exitTabData);
-              Object.assign(exitTab, exitTabData);
-              
-              // Restore nested exit tabs
-              if (Array.isArray(exitTabData.nestedExitTabs)) {
-                exitTab.nestedExitTabs = exitTabData.nestedExitTabs.map((nestedData) => {
-                  const nested = new ExitTab(nestedData);
-                  Object.assign(nested, nestedData);
-                  return nested;
-                });
-              }
-              
-              return exitTab;
-            });
-          }
-          
-          // Copy other panel properties
-          Object.assign(panel, panelData);
-          panel.sign = sign; // Ensure sign is set
-          newPost.panels.push(panel);
-        }
-      }
-      
-      setPost(newPost);
+
+      normalizeSelectionForCurrentPost();
+      currentlySelectedSubPanelIndex = 0;
+      currentlySelectedRowIndex = 0;
+      currentlySelectedBlockIndex = 0;
+      formHandler.updateForm();
+      redraw();
+      endUndoableChange();
     } catch (error) {
       console.error("Error loading template:", error);
       alert("Failed to load template: " + error.message);
+      endUndoableChange();
+    }
+  };
+
+  const renameTemplate = async function (templateId) {
+    if (!templateId) {
+      return;
+    }
+
+    try {
+      const db = await initTemplateDB();
+      const template = await db.getTemplate(templateId);
+
+      if (!template) {
+        alert("Template not found");
+        return;
+      }
+
+      const newName = window.prompt("Rename template:", template.name || "");
+
+      if (newName === null) {
+        return;
+      }
+
+      const trimmedName = newName.trim();
+      if (!trimmedName) {
+        alert("Please enter a template name");
+        return;
+      }
+
+      const renamedTemplate = {
+        ...template,
+        name: trimmedName,
+        dateModified: new Date().toISOString(),
+      };
+
+      if (typeof db.updateTemplate === "function") {
+        await db.updateTemplate(templateId, renamedTemplate);
+      } else {
+        await db.saveTemplate(renamedTemplate);
+      }
+
+      await refreshTemplatesList();
+    } catch (error) {
+      console.error("Error renaming template:", error);
+      alert("Failed to rename template: " + error.message);
     }
   };
 
@@ -8159,45 +9586,86 @@ const app = (function () {
     }
   };
 
+  const getTemplateSearchValue = function () {
+    const searchInput = document.getElementById("templateSearchInput");
+    return String(searchInput?.value || "").trim().toLowerCase();
+  };
+
+  const getTemplateSortMode = function () {
+    const sortSelect = document.getElementById("templateSortSelect");
+    return sortSelect?.value === "alphabetical" ? "alphabetical" : "date-created";
+  };
+
   const refreshTemplatesList = async function () {
     try {
       const db = await initTemplateDB();
-      const templates = await db.getAllTemplates();
-      
+      let templates = await db.getAllTemplates();
+
       const templatesList = document.getElementById("savedTemplatesList");
       if (!templatesList) {
         return;
       }
 
-      // Clear existing list
       templatesList.innerHTML = "";
 
+      const searchValue = getTemplateSearchValue();
+      if (searchValue) {
+        templates = templates.filter((template) =>
+          String(template.name || "").toLowerCase().includes(searchValue)
+        );
+      }
+
+      const sortMode = getTemplateSortMode();
+      if (sortMode === "alphabetical") {
+        templates.sort((a, b) =>
+          String(a.name || "").localeCompare(String(b.name || ""), undefined, {
+            sensitivity: "base",
+            numeric: true,
+          })
+        );
+      } else {
+        templates.sort((a, b) => {
+          const dateA = new Date(a.dateCreated || a.dateModified || 0);
+          const dateB = new Date(b.dateCreated || b.dateModified || 0);
+          return dateB - dateA;
+        });
+      }
+
       if (templates.length === 0) {
-        templatesList.innerHTML = "<p style='padding: 1rem; color: #666;'>No saved templates</p>";
+        templatesList.innerHTML = `<p class="templateEmptyMessage">${
+          searchValue ? "No saved templates match your search" : "No saved templates"
+        }</p>`;
         return;
       }
 
-      // Sort templates by date (newest first)
-      templates.sort((a, b) => {
-        const dateA = new Date(a.dateModified || a.dateCreated);
-        const dateB = new Date(b.dateModified || b.dateCreated);
-        return dateB - dateA;
-      });
-
-      // Create template items
       templates.forEach((template) => {
+        const escapedId = escapeHtml(template.id);
         const templateItem = document.createElement("div");
         templateItem.className = "templateItem";
         templateItem.innerHTML = `
           <div class="templateItemInfo">
-            <span class="templateItemName">${escapeHtml(template.name)}</span>
-            <span class="templateItemDate">${formatDate(template.dateModified || template.dateCreated)}</span>
+            <div class="templateNameRow">
+              <span class="templateItemName">${escapeHtml(template.name)}</span>
+              <button class="templateRenameBtn" onclick="app.renameTemplate('${escapedId}')" title="Rename Template" aria-label="Rename Template">
+                <span class="material-symbols-outlined">edit</span>
+              </button>
+            </div>
+            <span class="templateItemDate">${formatDate(template.dateCreated || template.dateModified)}</span>
           </div>
           <div class="templateItemActions">
-            <button class="templateLoadBtn" onclick="app.loadTemplate('${template.id}')" title="Load Template">
+            <button class="templateLoadBtn templateLoadPostBtn" onclick="app.loadTemplate('${escapedId}', 'replace-post')" title="Replace Post">
               <span class="material-symbols-outlined">upload</span>
+              <span>Replace Post</span>
             </button>
-            <button class="templateDeleteBtn" onclick="app.deleteTemplate('${template.id}')" title="Delete Template">
+            <button class="templateLoadBtn templateLoadPanelBtn" onclick="app.loadTemplate('${escapedId}', 'replace-panel')" title="Replace Panel">
+              <span class="material-symbols-outlined">move_down</span>
+              <span>Replace Panel</span>
+            </button>
+            <button class="templateLoadBtn templateAddBtn" onclick="app.loadTemplate('${escapedId}', 'add')" title="Add Template After Selected Panel">
+              <span class="material-symbols-outlined">add</span>
+              <span>Add</span>
+            </button>
+            <button class="templateDeleteBtn" onclick="app.deleteTemplate('${escapedId}')" title="Delete Template" aria-label="Delete Template">
               <span class="material-symbols-outlined">delete</span>
             </button>
           </div>
@@ -8231,6 +9699,9 @@ const app = (function () {
         movePanel: (...args) => runWithUndo(() => movePanel(...args)),
         changeEditingPanel: changeEditingPanel,
         setPanelSpacing: (...args) => runWithUndo(() => setPanelSpacing(...args)),
+        setSubpanelDividerVisible,
+        isSubpanelDividerVisible,
+        getAPLSubpanelGroups: getAPLSubpanelGroupsForCurrentPanel,
         newShield: (...args) => runWithUndo(() => newShield(...args)),
         clearShields: (...args) => runWithUndo(() => clearShields(...args)),
         newSubPanel: (...args) => runWithUndo(() => addSubPanel(...args)),
@@ -8261,9 +9732,13 @@ const app = (function () {
         delControlElem: (...args) => runWithUndo(() => delControlElem(...args)),
         clearAll: clearAll,
         saveTemplate: saveTemplate,
+        savePanelTemplate: savePanelTemplate,
+        savePostTemplate: savePostTemplate,
         loadTemplate: loadTemplate,
+        renameTemplate: renameTemplate,
         deleteTemplate: deleteTemplate,
         refreshTemplatesList: refreshTemplatesList,
+        setTemplateLoadWarningEnabled: setTemplateLoadWarningEnabled,
 
         undo,
         redo,
@@ -8274,6 +9749,11 @@ const app = (function () {
         
         createPanelRightOfSelected,
         createPanelLeftOfSelected,
+        createStackedPanelBelowSelected,
+        changeEditingStackedPanelSlot,
+        removeStackedPanelSlot,
+        setStackedPanelSpacing,
+        setStackedPanelMatchWidth,
         createSubPanelRightOfSelected,
         createSubPanelLeftOfSelected,
         createRowBelowSelected,

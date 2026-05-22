@@ -36,11 +36,14 @@ const formHandler = (function () {
         exitTabTopOffset: "signMaker.exitTabTopOffset",
         restoreOnRefresh: "signMaker.restoreOnRefresh",
         shortcutOverrides: "signMaker.shortcutOverrides",
+        keybindMode: "signMaker.keybindMode",
         configBarPosition: "signMaker.configBarPosition",
         interfaceUiScale: "signMaker.interfaceUiScale",
         interfaceThemeMode: "signMaker.interfaceThemeMode",
         shieldPickerScrollTop: "signMaker.shieldPickerScrollTop",
         customShieldMakerShields: "signMaker.customShieldMaker.shields.v1",
+        customIconPickerIcons: "signMaker.customIconPicker.icons.v1",
+        templateLoadWarning: "signMaker.templateLoadWarning",
     };
     let localStorageAvailable;
     let localStorageWarningLogged = false;
@@ -96,6 +99,197 @@ const getPostThicknessFallback = () =>
     }
   };
 
+
+  const CUSTOM_ICON_VALUE_PREFIX = "CUSTOMICON-";
+  let customIconRecords = [];
+
+  const createCustomIconId = () =>
+    "cicon_" +
+    Date.now().toString(36) +
+    "_" +
+    Math.random().toString(36).slice(2, 8);
+
+  const getCustomIconValue = (id) =>
+    CUSTOM_ICON_VALUE_PREFIX + String(id || "").replace(/[^a-zA-Z0-9_-]/g, "");
+
+  const isCustomIconValue = (value) =>
+    typeof value === "string" && value.startsWith(CUSTOM_ICON_VALUE_PREFIX);
+
+  const normalizeCustomIconLabel = (label, fallback = "Custom Icon") => {
+    const normalized = String(label || "")
+      .replace(/\.[a-z0-9]+$/i, "")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return normalized || fallback;
+  };
+
+  const normalizeCustomIconRecord = (record = {}, index = 0) => {
+    const id = String(record.id || createCustomIconId());
+    const src = String(record.src || record.data || record.imageData || "").trim();
+
+    return {
+      id,
+      value: getCustomIconValue(id),
+      label: normalizeCustomIconLabel(record.label || record.name, `Custom Icon ${index + 1}`),
+      src,
+      dateCreated: record.dateCreated || new Date().toISOString(),
+      dateModified: record.dateModified || record.dateCreated || new Date().toISOString(),
+    };
+  };
+
+  const syncCustomIconRegistry = () => {
+    if (typeof IconElement === "undefined" || !IconElement.prototype.icons) {
+      return;
+    }
+
+    const icons = IconElement.prototype.icons;
+
+    for (const key of Object.keys(icons)) {
+      if (icons[key]?.customIconPicker) {
+        delete icons[key];
+      }
+    }
+
+    customIconRecords.forEach((record, index) => {
+      if (!record.src) {
+        return;
+      }
+
+      icons[record.value] = {
+        label: record.label,
+        src: record.src,
+        customIconPicker: true,
+        customIconId: record.id,
+        customIconOrder: index,
+      };
+    });
+  };
+
+  const loadCustomIconRecords = () => {
+    try {
+      const raw = getStoredItem(STORAGE_KEYS.customIconPickerIcons);
+      const parsed = raw ? JSON.parse(raw) : [];
+      customIconRecords = Array.isArray(parsed)
+        ? parsed.map(normalizeCustomIconRecord).filter((record) => record.src)
+        : [];
+    } catch (error) {
+      console.warn("Unable to load custom icon records", error);
+      customIconRecords = [];
+    }
+
+    syncCustomIconRegistry();
+    return customIconRecords;
+  };
+
+  const saveCustomIconRecords = () => {
+    setStoredItem(
+      STORAGE_KEYS.customIconPickerIcons,
+      JSON.stringify(customIconRecords)
+    );
+  };
+
+  const upsertCustomIconRecord = (record) => {
+    const normalizedRecord = normalizeCustomIconRecord(
+      record,
+      customIconRecords.length
+    );
+
+    if (!normalizedRecord.src) {
+      return null;
+    }
+
+    const existingIndex = customIconRecords.findIndex(
+      (existing) => existing.id === normalizedRecord.id
+    );
+
+    if (existingIndex >= 0) {
+      normalizedRecord.dateCreated = customIconRecords[existingIndex].dateCreated;
+      customIconRecords[existingIndex] = normalizedRecord;
+    } else {
+      customIconRecords.push(normalizedRecord);
+    }
+
+    saveCustomIconRecords();
+    syncCustomIconRegistry();
+    return normalizedRecord;
+  };
+
+  const deleteCustomIconRecord = (id) => {
+    const record = customIconRecords.find((existing) => existing.id === id) || null;
+
+    if (!record) {
+      return null;
+    }
+
+    customIconRecords = customIconRecords.filter(
+      (existing) => existing.id !== id
+    );
+
+    saveCustomIconRecords();
+    syncCustomIconRegistry();
+    return record;
+  };
+
+  const traverseControlIconElements = (control, callback) => {
+    if (!control || !Array.isArray(control.rows)) {
+      return;
+    }
+
+    for (const row of control.rows) {
+      if (!Array.isArray(row)) {
+        continue;
+      }
+
+      for (const blockElement of row) {
+        if (
+          blockElement &&
+          (blockElement instanceof IconElement ||
+            Object.prototype.hasOwnProperty.call(blockElement, "icon"))
+        ) {
+          callback(blockElement);
+        }
+      }
+    }
+  };
+
+  const revertCustomIconUsageToDefault = (value) => {
+    const targetValue = String(value || "");
+    const currentPost = exposed && typeof exposed.getPost === "function"
+      ? exposed.getPost()
+      : post;
+
+    if (!targetValue || !currentPost || !Array.isArray(currentPost.panels)) {
+      return;
+    }
+
+    for (const panel of currentPost.panels) {
+      const sign = panel?.sign;
+
+      if (!sign) {
+        continue;
+      }
+
+      [sign.blockElements, sign.globalTopBlockElements, sign.globalBottomBlockElements].forEach(
+        (control) => traverseControlIconElements(control, (iconElement) => {
+          if (iconElement.icon === targetValue) {
+            iconElement.icon = IconElement.prototype.defaultIcon;
+          }
+        })
+      );
+
+      if (Array.isArray(sign.subPanels)) {
+        for (const subPanel of sign.subPanels) {
+          traverseControlIconElements(subPanel.blockElements, (iconElement) => {
+            if (iconElement.icon === targetValue) {
+              iconElement.icon = IconElement.prototype.defaultIcon;
+            }
+          });
+        }
+      }
+    }
+  };
 
   const CUSTOM_SHIELD_MAKER_VALUE_PREFIX = "CUSTOMSHIELD-";
   const CUSTOM_SHIELD_MAKER_VARIANT_KEYS = ["1", "2", "3", "4"];
@@ -727,6 +921,73 @@ const getPostThicknessFallback = () =>
       return "always";
     };
     
+    const normalizeKeybindMode = (value) => {
+      const normalized = String(value || "").toLowerCase();
+      if (normalized === "undo-redo" || normalized === "none") {
+        return normalized;
+      }
+      return "all";
+    };
+
+    const getStoredKeybindMode = () =>
+      normalizeKeybindMode(getStoredItem(STORAGE_KEYS.keybindMode));
+
+    const updateKeybindModeButtons = (mode) => {
+      const normalized = normalizeKeybindMode(mode);
+      document.querySelectorAll("[data-keybind-mode]").forEach((button) => {
+        const isActive = normalizeKeybindMode(button.dataset.keybindMode) === normalized;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-pressed", String(isActive));
+      });
+    };
+
+    const applyKeybindMode = (mode, { persist = false } = {}) => {
+      const normalized = normalizeKeybindMode(mode);
+      updateKeybindModeButtons(normalized);
+
+      if (persist) {
+        setStoredItem(STORAGE_KEYS.keybindMode, normalized);
+      }
+
+      return normalized;
+    };
+
+    const isUndoRedoShortcutField = (fieldId) =>
+      fieldId === "settingsControlUndoEdit" ||
+      fieldId === "settingsControlRedoEdit";
+
+    const isShortcutActionAllowedByMode = (fieldId) => {
+      const mode = getStoredKeybindMode();
+
+      if (mode === "none") {
+        return false;
+      }
+
+      if (mode === "undo-redo") {
+        return isUndoRedoShortcutField(fieldId);
+      }
+
+      return true;
+    };
+
+    const bindKeybindModeButtons = (root = document) => {
+      const buttons = root.querySelectorAll("[data-keybind-mode]");
+
+      buttons.forEach((button) => {
+        if (button.dataset.keybindModeBound === "true") {
+          return;
+        }
+
+        button.dataset.keybindModeBound = "true";
+
+        button.addEventListener("click", () => {
+          applyKeybindMode(button.dataset.keybindMode, { persist: true });
+        });
+      });
+
+      applyKeybindMode(getStoredKeybindMode());
+    };
+
     const getStoredShortcutOverrides = () => {
       const raw = getStoredItem(STORAGE_KEYS.shortcutOverrides);
       if (!raw) {
@@ -3296,9 +3557,11 @@ const getPostThicknessFallback = () =>
     exposed = appExposed;
     post = exposed.getPost();
     applyStoredPreferences();
+    loadCustomIconRecords();
     await initUI();
     initCustomShieldMaker();
     bindConfigPositionControls();
+    bindKeybindModeButtons(document);
     applyConfigBarPosition(getStoredConfigBarPosition());
     bindUndoControls();
     applyInterfaceUIScale(getStoredInterfaceUIScale());
@@ -5542,6 +5805,15 @@ const getPostThicknessFallback = () =>
         return null;
       }
 
+      const directArrowBlockMap = {
+        "Down (CA)": "img/arrowBlocks/DOWN_CA.svg",
+        "Down (IL)": "img/arrowBlocks/DOWN_IL.svg",
+      };
+
+      if (directArrowBlockMap[label]) {
+        return directArrowBlockMap[label];
+      }
+
       const hardMap = {
         "Side Left": "A-4",
         "Side Right": "A-1",
@@ -5969,6 +6241,30 @@ const getPostThicknessFallback = () =>
           });
         }
       }
+
+      const settingsTemplateLoadWarning = document.getElementById("settingsTemplateLoadWarning");
+      if (settingsTemplateLoadWarning) {
+        settingsTemplateLoadWarning.checked =
+          getStoredItem(STORAGE_KEYS.templateLoadWarning) === "true";
+
+        if (settingsTemplateLoadWarning.dataset.templateLoadWarningBound !== "true") {
+          settingsTemplateLoadWarning.dataset.templateLoadWarningBound = "true";
+          settingsTemplateLoadWarning.addEventListener("change", () => {
+            setStoredItem(
+              STORAGE_KEYS.templateLoadWarning,
+              settingsTemplateLoadWarning.checked ? "true" : "false"
+            );
+
+            if (
+              typeof app !== "undefined" &&
+              typeof app.setTemplateLoadWarningEnabled === "function"
+            ) {
+              app.setTemplateLoadWarningEnabled(settingsTemplateLoadWarning.checked);
+            }
+          });
+        }
+      }
+      bindKeybindModeButtons(document);
     const updateUtilityButtonLabels = () => {
         const exportButton = document.getElementById("export");
         const nightModeButton = document.getElementById("nightMode");
@@ -7210,6 +7506,10 @@ const getPostThicknessFallback = () =>
             continue;
           }
 
+          if (!isShortcutActionAllowedByMode(action.fieldId)) {
+            return;
+          }
+
           event.preventDefault();
           event.stopPropagation();
           action.run();
@@ -7415,17 +7715,23 @@ const getPostThicknessFallback = () =>
     registerPanelButton("#duplicatePanel", "duplicatePanel");
     registerPanelButton("#deletePanel", "deletePanel");
 
-    const panelSpacingSlider = document.getElementById("panelSpacing");
-    const panelSpacingValueInput =
-      document.getElementById("panelSpacingValue");
+    const panelSpacingSliders = Array.from(
+      document.querySelectorAll("#panelSpacing, #settingsPanelSpacing")
+    );
+    const panelSpacingValueInputs = Array.from(
+      document.querySelectorAll("#panelSpacingValue, #settingsPanelSpacingValue")
+    );
 
     const syncPanelSpacingInputs = (value) => {
-      if (panelSpacingSlider) {
-        panelSpacingSlider.value = value;
-      }
-      if (panelSpacingValueInput) {
-        panelSpacingValueInput.value = value;
-      }
+      const normalizedValue = String(value);
+
+      panelSpacingSliders.forEach((slider) => {
+        slider.value = normalizedValue;
+      });
+
+      panelSpacingValueInputs.forEach((input) => {
+        input.value = normalizedValue;
+      });
     };
 
     const commitPanelSpacingChange = (value) => {
@@ -7434,7 +7740,9 @@ const getPostThicknessFallback = () =>
         Number.isFinite(parsedValue) && parsedValue >= 0
           ? Math.min(parsedValue, 8)
           : 4;
+
       syncPanelSpacingInputs(normalized);
+
       if (exposed && typeof exposed.setPanelSpacing === "function") {
         exposed.setPanelSpacing(normalized);
       } else if (post) {
@@ -7445,27 +7753,37 @@ const getPostThicknessFallback = () =>
       }
     };
 
-    if (panelSpacingSlider) {
-      panelSpacingSlider.addEventListener("input", () => {
-        if (panelSpacingValueInput) {
-          panelSpacingValueInput.value = panelSpacingSlider.value;
-        }
-      });
-      panelSpacingSlider.addEventListener("change", () => {
-        commitPanelSpacingChange(panelSpacingSlider.value);
-      });
-    }
+    panelSpacingSliders.forEach((slider) => {
+      if (slider.dataset.panelSpacingBound === "true") {
+        return;
+      }
 
-    if (panelSpacingValueInput) {
-      panelSpacingValueInput.addEventListener("input", () => {
-        if (panelSpacingSlider) {
-          panelSpacingSlider.value = panelSpacingValueInput.value;
-        }
+      slider.dataset.panelSpacingBound = "true";
+
+      slider.addEventListener("input", () => {
+        syncPanelSpacingInputs(slider.value);
       });
-      panelSpacingValueInput.addEventListener("change", () => {
-        commitPanelSpacingChange(panelSpacingValueInput.value);
+
+      slider.addEventListener("change", () => {
+        commitPanelSpacingChange(slider.value);
       });
-    }
+    });
+
+    panelSpacingValueInputs.forEach((input) => {
+      if (input.dataset.panelSpacingBound === "true") {
+        return;
+      }
+
+      input.dataset.panelSpacingBound = "true";
+
+      input.addEventListener("input", () => {
+        syncPanelSpacingInputs(input.value);
+      });
+
+      input.addEventListener("change", () => {
+        commitPanelSpacingChange(input.value);
+      });
+    });
 
     const postThicknessValueInput =
       document.getElementById("postThicknessValue");
@@ -10089,6 +10407,229 @@ const getPostThicknessFallback = () =>
     }
   };
     
+
+  const getSdIconDefinition = () => {
+    const iconInput = document.getElementById("sdIcon_icon");
+    const iconKey = iconInput && IconElement.prototype.icons[iconInput.value]
+      ? iconInput.value
+      : IconElement.prototype.defaultIcon;
+
+    return {
+      key: iconKey,
+      definition:
+        IconElement.prototype.icons[iconKey] ||
+        IconElement.prototype.icons[IconElement.prototype.defaultIcon],
+    };
+  };
+
+  const updateSdIconPreview = () => {
+    const previewImage = document.getElementById("sdIcon_previewImage");
+    const label = document.getElementById("sdIcon_selectedLabel");
+
+    const { key, definition } = getSdIconDefinition();
+    const displayName = String(definition?.label || definition?.name || key);
+
+    if (label) {
+      label.textContent = "Current: " + displayName;
+    }
+
+    if (previewImage) {
+      const src = String(definition?.src || definition?.asset || definition?.url || "");
+      const invertInput = document.getElementById("sdIcon_invertColors");
+      previewImage.src = src;
+      previewImage.alt = displayName;
+      previewImage.hidden = !src;
+      previewImage.classList.toggle(
+        "sdIconPreviewInvert",
+        !!invertInput && invertInput.checked
+      );
+    }
+  };
+
+  const updateSdIconAlignmentButtons = () => {
+    const alignmentInput = document.getElementById("sdIcon_alignment");
+    const currentAlignment = String(alignmentInput?.value || "Center").toLowerCase();
+
+    document.querySelectorAll("[data-sd-icon-align]").forEach((button) => {
+      const isActive =
+        String(button.dataset.sdIconAlign || "").toLowerCase() === currentAlignment;
+
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+  };
+
+  const syncSdIconControlPair = (controlId, valueId, value) => {
+    const control = document.getElementById(controlId);
+    const valueInput = document.getElementById(valueId);
+    const normalizedValue = String(value ?? "");
+
+    if (control) {
+      control.value = normalizedValue;
+    }
+
+    if (valueInput) {
+      valueInput.value = normalizedValue;
+    }
+  };
+
+  const updateSdIconExtraControls = (iconElement = null) => {
+    const currentIconElement = iconElement ||
+      (exposed && typeof exposed.getCurrentBlockElem === "function"
+        ? exposed.getCurrentBlockElem()
+        : null);
+
+    if (!currentIconElement) {
+      return;
+    }
+
+    const size = Number.isFinite(parseFloat(currentIconElement.iconSize))
+      ? parseFloat(currentIconElement.iconSize)
+      : 3;
+    const paddingHorizontal = Number.isFinite(parseFloat(currentIconElement.paddingHorizontal))
+      ? parseFloat(currentIconElement.paddingHorizontal)
+      : 0;
+    const paddingVertical = Number.isFinite(parseFloat(currentIconElement.paddingVertical))
+      ? parseFloat(currentIconElement.paddingVertical)
+      : 0;
+
+    syncSdIconControlPair("sdIcon_iconSizeSlider", "sdIcon_iconSize", size);
+    syncSdIconControlPair("sdIcon_paddingHorizontal", "sdIcon_paddingHorizontalVal", paddingHorizontal);
+    syncSdIconControlPair("sdIcon_paddingVertical", "sdIcon_paddingVerticalVal", paddingVertical);
+    updateSdIconPreview();
+    updateSdIconAlignmentButtons();
+  };
+
+  const setupSdIconEditorControls = () => {
+    const bindSliderPair = ({ sliderId, inputId, fallback, commitOnInput = false }) => {
+      const slider = document.getElementById(sliderId);
+      const input = document.getElementById(inputId);
+
+      if (!slider || !input || slider.dataset.sdIconPairBound === "true") {
+        return;
+      }
+
+      slider.dataset.sdIconPairBound = "true";
+
+      const syncToInput = () => {
+        input.value = slider.value;
+      };
+
+      const syncToSlider = () => {
+        const parsed = parseFloat(input.value);
+        slider.value = Number.isFinite(parsed) ? String(parsed) : String(fallback);
+      };
+
+      slider.addEventListener("input", () => {
+        syncToInput();
+        if (commitOnInput) {
+          readForm();
+        }
+      });
+
+      slider.addEventListener("change", () => {
+        syncToInput();
+        readForm();
+      });
+
+      input.addEventListener("input", () => {
+        syncToSlider();
+        if (commitOnInput) {
+          readForm();
+        }
+      });
+
+      input.addEventListener("change", () => {
+        syncToSlider();
+        readForm();
+      });
+    };
+
+    bindSliderPair({
+      sliderId: "sdIcon_iconSizeSlider",
+      inputId: "sdIcon_iconSize",
+      fallback: 3,
+    });
+    bindSliderPair({
+      sliderId: "sdIcon_paddingHorizontal",
+      inputId: "sdIcon_paddingHorizontalVal",
+      fallback: 0,
+    });
+    bindSliderPair({
+      sliderId: "sdIcon_paddingVertical",
+      inputId: "sdIcon_paddingVerticalVal",
+      fallback: 0,
+    });
+
+    const bindResetButton = (buttonId, values) => {
+      const button = document.getElementById(buttonId);
+
+      if (!button || button.dataset.sdIconResetBound === "true") {
+        return;
+      }
+
+      button.dataset.sdIconResetBound = "true";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+
+        Object.entries(values).forEach(([id, value]) => {
+          const element = document.getElementById(id);
+          if (element) {
+            element.value = String(value);
+          }
+        });
+
+        readForm();
+      });
+    };
+
+    bindResetButton("sdIcon_sizeReset", {
+      sdIcon_iconSizeSlider: 3,
+      sdIcon_iconSize: 3,
+    });
+    bindResetButton("sdIcon_paddingHorizontalReset", {
+      sdIcon_paddingHorizontal: 0,
+      sdIcon_paddingHorizontalVal: 0,
+    });
+    bindResetButton("sdIcon_paddingVerticalReset", {
+      sdIcon_paddingVertical: 0,
+      sdIcon_paddingVerticalVal: 0,
+    });
+
+    const iconInput = document.getElementById("sdIcon_icon");
+    if (iconInput && iconInput.dataset.sdIconPreviewBound !== "true") {
+      iconInput.dataset.sdIconPreviewBound = "true";
+      iconInput.addEventListener("input", updateSdIconPreview);
+      iconInput.addEventListener("change", updateSdIconPreview);
+    }
+
+    const invertInput = document.getElementById("sdIcon_invertColors");
+    if (invertInput && invertInput.dataset.sdIconPreviewBound !== "true") {
+      invertInput.dataset.sdIconPreviewBound = "true";
+      invertInput.addEventListener("input", updateSdIconPreview);
+      invertInput.addEventListener("change", updateSdIconPreview);
+    }
+
+    document.querySelectorAll("[data-sd-icon-align]").forEach((button) => {
+      if (button.dataset.sdIconAlignBound === "true") {
+        return;
+      }
+
+      button.dataset.sdIconAlignBound = "true";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        const alignmentInput = document.getElementById("sdIcon_alignment");
+
+        if (alignmentInput) {
+          alignmentInput.value = button.dataset.sdIconAlign || "Center";
+        }
+
+        updateSdIconAlignmentButtons();
+        readForm();
+      });
+    });
+  };
+    
   // Handle Form
   // Read the form and update the page by redrawing it.
   const readForm = function () {
@@ -10613,6 +11154,33 @@ const getPostThicknessFallback = () =>
     }
     updateShieldCountyVisibility();
 
+    if (blockElemType === "sdIcon") {
+      const normalizeIconNumber = (value, fallback = 0) => {
+        const parsed = parseFloat(
+          value !== null && value !== undefined ? value : fallback
+        );
+        return Number.isFinite(parsed) ? parsed : fallback;
+      };
+
+      const legacyIconSpacing = normalizeIconNumber(currentBlockElem.spacing, 0);
+      currentBlockElem.paddingHorizontal = normalizeIconNumber(
+        currentBlockElem.paddingHorizontal,
+        legacyIconSpacing
+      );
+      currentBlockElem.paddingVertical = normalizeIconNumber(
+        currentBlockElem.paddingVertical,
+        0
+      );
+      currentBlockElem.spacing = 0;
+      currentBlockElem.invertColors =
+        currentBlockElem.invertColors === true ||
+        currentBlockElem.invertColors === "true" ||
+        currentBlockElem.invertColors === 1 ||
+        currentBlockElem.invertColors === "1" ||
+        currentBlockElem.invertColors === "on";
+      updateSdIconExtraControls(currentBlockElem);
+    }
+
     if (blockElemType === "sdArrow") {
       currentBlockElem.flip =
         currentBlockElem.flip === true ||
@@ -10892,6 +11460,12 @@ const getPostThicknessFallback = () =>
         const grid = document.getElementById(gridId);
         const input = document.getElementById(inputId);
         const label = document.getElementById(labelId);
+        const customIconUploadButton = modalId === "iconSelectorModal"
+          ? document.getElementById("uploadCustomIconButton")
+          : null;
+        const customIconFileInput = modalId === "iconSelectorModal"
+          ? document.getElementById("uploadCustomIconFile")
+          : null;
 
         if (!chooseBtn || !modal || !grid || !input || !sourceObject) {
           return;
@@ -10914,6 +11488,48 @@ const getPostThicknessFallback = () =>
           }
         };
 
+        const applyAssetSelection = (key) => {
+          input.value = key;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+
+          updateCurrentLabel();
+
+          if (shouldReadForm) {
+            readForm();
+          }
+        };
+
+        const deleteCustomIconFromPicker = (definition, key) => {
+          const deletedRecord = deleteCustomIconRecord(definition.customIconId);
+
+          if (!deletedRecord) {
+            return;
+          }
+
+          if (input.value === key) {
+            applyAssetSelection(defaultKey);
+          }
+
+          if (document.getElementById("sdIcon_icon")?.value === key) {
+            document.getElementById("sdIcon_icon").value = defaultKey;
+          }
+
+          if (document.getElementById("settingsDefaultsIconValue")?.value === key) {
+            document.getElementById("settingsDefaultsIconValue").value = defaultKey;
+            saveSettingsDefaultsField("settingsDefaultsIconValue", defaultKey);
+          }
+
+          revertCustomIconUsageToDefault(key);
+
+          if (typeof exposed?.redraw === "function") {
+            exposed.redraw();
+          }
+
+          updateForm();
+          populateGrid(search?.value || "");
+        };
+
           const populateGrid = (filter = "") => {
             lib.clearChildren(grid);
 
@@ -10931,11 +11547,22 @@ const getPostThicknessFallback = () =>
                   itemKey.includes(filterText)
                 );
               })
-              .sort((a, b) =>
-                String(a[1]?.label || a[1]?.name || a[0]).localeCompare(
+              .sort((a, b) => {
+                const aCustom = !!a[1]?.customIconPicker;
+                const bCustom = !!b[1]?.customIconPicker;
+
+                if (aCustom !== bCustom) {
+                  return aCustom ? -1 : 1;
+                }
+
+                if (aCustom && bCustom) {
+                  return (a[1]?.customIconOrder ?? 0) - (b[1]?.customIconOrder ?? 0);
+                }
+
+                return String(a[1]?.label || a[1]?.name || a[0]).localeCompare(
                   String(b[1]?.label || b[1]?.name || b[0])
-                )
-              );
+                );
+              });
 
             for (const [key, definition] of entries) {
               const itemLabel = String(definition?.label || definition?.name || key);
@@ -10982,17 +11609,31 @@ const getPostThicknessFallback = () =>
               item.appendChild(preview);
               item.appendChild(text);
 
+              if (definition?.customIconPicker) {
+                item.classList.add("customIconGridCard");
+
+                const deleteButton = document.createElement("button");
+                deleteButton.type = "button";
+                deleteButton.className = "customIconDeleteButton";
+                deleteButton.title = `Delete ${itemLabel}`;
+                deleteButton.setAttribute("aria-label", `Delete ${itemLabel}`);
+
+                const deleteIcon = document.createElement("span");
+                deleteIcon.className = "material-symbols-outlined";
+                deleteIcon.textContent = "delete";
+                deleteButton.appendChild(deleteIcon);
+
+                deleteButton.addEventListener("click", (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  deleteCustomIconFromPicker(definition, key);
+                });
+
+                item.appendChild(deleteButton);
+              }
+
               item.addEventListener("click", () => {
-                input.value = key;
-                input.dispatchEvent(new Event("input", { bubbles: true }));
-                input.dispatchEvent(new Event("change", { bubbles: true }));
-
-                updateCurrentLabel();
-
-                if (shouldReadForm) {
-                  readForm();
-                }
-
+                applyAssetSelection(key);
                 modal.close();
               });
 
@@ -11009,6 +11650,60 @@ const getPostThicknessFallback = () =>
 
         if (chooseBtn.dataset.assetSelectorInitialized !== "true") {
           chooseBtn.dataset.assetSelectorInitialized = "true";
+
+          if (
+            customIconUploadButton &&
+            customIconFileInput &&
+            customIconUploadButton.dataset.customIconUploadBound !== "true"
+          ) {
+            customIconUploadButton.dataset.customIconUploadBound = "true";
+
+            customIconUploadButton.addEventListener("click", (event) => {
+              event.preventDefault();
+              customIconFileInput.click();
+            });
+
+            customIconFileInput.addEventListener("change", (event) => {
+              const file = event.target.files && event.target.files[0];
+
+              if (!file) {
+                return;
+              }
+
+              const isValidFile =
+                file.type === "image/svg+xml" ||
+                file.type === "image/png" ||
+                /\.(svg|png)$/i.test(file.name);
+
+              if (!isValidFile) {
+                event.target.value = "";
+                return;
+              }
+
+              const reader = new FileReader();
+
+              reader.onload = (readerEvent) => {
+                const record = upsertCustomIconRecord({
+                  label: file.name,
+                  src: readerEvent.target?.result || "",
+                });
+
+                event.target.value = "";
+
+                if (!record) {
+                  return;
+                }
+
+                if (search) {
+                  search.value = "";
+                }
+
+                populateGrid("");
+              };
+
+              reader.readAsDataURL(file);
+            });
+          }
 
           chooseBtn.addEventListener("click", (event) => {
             event.preventDefault();
@@ -11299,19 +11994,24 @@ const getPostThicknessFallback = () =>
         panelList.appendChild(panelRow);
       }
 
-    const panelSpacingSlider = document.getElementById("panelSpacing");
-    const panelSpacingValueInput =
-      document.getElementById("panelSpacingValue");
+    const panelSpacingSliders = Array.from(
+      document.querySelectorAll("#panelSpacing, #settingsPanelSpacing")
+    );
+    const panelSpacingValueInputs = Array.from(
+      document.querySelectorAll("#panelSpacingValue, #settingsPanelSpacingValue")
+    );
     const resolvedPanelSpacing =
       typeof post.panelSpacing === "number" && post.panelSpacing >= 0
-        ? post.panelSpacing
-        : 0;
-    if (panelSpacingSlider) {
-      panelSpacingSlider.value = resolvedPanelSpacing;
-    }
-    if (panelSpacingValueInput) {
-      panelSpacingValueInput.value = resolvedPanelSpacing;
-    }
+        ? Math.min(post.panelSpacing, 8)
+        : 4;
+
+    panelSpacingSliders.forEach((slider) => {
+      slider.value = resolvedPanelSpacing;
+    });
+
+    panelSpacingValueInputs.forEach((input) => {
+      input.value = resolvedPanelSpacing;
+    });
 
     const postThicknessValueInput =
       document.getElementById("postThicknessValue");
@@ -11390,6 +12090,252 @@ const getPostThicknessFallback = () =>
       return tabGroup;
     };
 
+      const renderStackedPanelControls = () => {
+        const stackedPanelList = document.getElementById("stackedPanelList");
+
+        if (!stackedPanelList) {
+          return;
+        }
+
+        if (stackedPanelList.dataset.dropdownCloseBound !== "true") {
+          document.addEventListener("click", (event) => {
+            document
+              .querySelectorAll(".stackedPanelOptionsWrapper.open")
+              .forEach((wrapper) => {
+                if (!wrapper.contains(event.target)) {
+                  wrapper.classList.remove("open");
+                }
+              });
+          });
+          stackedPanelList.dataset.dropdownCloseBound = "true";
+        }
+
+        stackedPanelList.replaceChildren();
+
+        const stackInfo =
+          exposed && typeof exposed.getCurrentStackedPanelInfo === "function"
+            ? exposed.getCurrentStackedPanelInfo()
+            : {
+                topIndex: exposed?.vars?.currentlySelectedPanelIndex || 0,
+                bottomIndex: -1,
+                selectedSlot: "Top",
+                hasBottom: false,
+                spacing: 0,
+                matchWidth: false,
+              };
+
+        const createStackedPanelOptions = () => {
+          const wrapper = document.createElement("div");
+          wrapper.className = "stackedPanelOptionsWrapper";
+
+          const toggleButton = document.createElement("button");
+          toggleButton.type = "button";
+          toggleButton.className = "stackedPanelOptionsButton";
+          toggleButton.title = "Bottom panel settings";
+          toggleButton.setAttribute("aria-label", "Bottom panel settings");
+
+          const toggleIcon = document.createElement("span");
+          toggleIcon.className = "material-symbols-outlined";
+          toggleIcon.textContent = "arrow_drop_down";
+          toggleButton.appendChild(toggleIcon);
+
+          toggleButton.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            document
+              .querySelectorAll(".stackedPanelOptionsWrapper.open")
+              .forEach((openWrapper) => {
+                if (openWrapper !== wrapper) {
+                  openWrapper.classList.remove("open");
+                }
+              });
+
+            wrapper.classList.toggle("open");
+          });
+
+          const dropdown = document.createElement("div");
+          dropdown.className = "stackedPanelOptionsDropdown";
+          dropdown.addEventListener("click", (event) => event.stopPropagation());
+
+          const spacingRow = document.createElement("label");
+          spacingRow.className = "stackedPanelOptionsRow";
+
+          const spacingLabel = document.createElement("span");
+          spacingLabel.textContent = "Spacing:";
+
+          const spacingInput = document.createElement("input");
+          spacingInput.type = "number";
+          spacingInput.min = "0";
+          spacingInput.max = "4";
+          spacingInput.step = "0.1";
+          spacingInput.value = String(stackInfo.spacing ?? 0);
+          spacingInput.className = "stackedPanelSpacingInput";
+          spacingInput.addEventListener("change", () => {
+            const value = Math.max(0, Math.min(4, parseFloat(spacingInput.value) || 0));
+            spacingInput.value = String(value);
+
+            if (typeof app.setStackedPanelSpacing === "function") {
+              app.setStackedPanelSpacing(value);
+            }
+          });
+
+          spacingRow.appendChild(spacingLabel);
+          spacingRow.appendChild(spacingInput);
+
+          const matchWidthRow = document.createElement("label");
+          matchWidthRow.className = "stackedPanelOptionsCheckboxRow";
+
+          const matchWidthInput = document.createElement("input");
+          matchWidthInput.type = "checkbox";
+          matchWidthInput.checked = stackInfo.matchWidth === true;
+          matchWidthInput.addEventListener("change", () => {
+            if (typeof app.setStackedPanelMatchWidth === "function") {
+              app.setStackedPanelMatchWidth(matchWidthInput.checked);
+            }
+          });
+
+          const matchWidthText = document.createElement("span");
+          matchWidthText.textContent = "Keep panel width consistent";
+
+          matchWidthRow.appendChild(matchWidthInput);
+          matchWidthRow.appendChild(matchWidthText);
+
+          dropdown.appendChild(spacingRow);
+          dropdown.appendChild(matchWidthRow);
+          wrapper.appendChild(toggleButton);
+          wrapper.appendChild(dropdown);
+
+          return wrapper;
+        };
+
+        const createStackButtonGroup = ({ slot, label, exists, canDelete, title, hasOptions }) => {
+          const group = document.createElement("div");
+          group.className =
+            "stackedPanelTabGroup" +
+            (stackInfo.selectedSlot === slot ? " active" : "") +
+            (!exists ? " emptyStackedPanelSlot" : "");
+
+          const slotButton = document.createElement("button");
+          slotButton.type = "button";
+          slotButton.className = "stackedPanelTabButton";
+          slotButton.textContent = label;
+          slotButton.title = title || label;
+          slotButton.addEventListener("click", () => {
+            if (typeof app.changeEditingStackedPanelSlot === "function") {
+              app.changeEditingStackedPanelSlot(slot);
+            }
+          });
+          group.appendChild(slotButton);
+
+          if (hasOptions) {
+            group.appendChild(createStackedPanelOptions());
+          }
+
+          const deleteButton = document.createElement("button");
+          deleteButton.type = "button";
+          deleteButton.className = "stackedPanelDeleteButton";
+          deleteButton.disabled = !canDelete;
+          deleteButton.title = canDelete ? `Delete ${label}` : `${label} cannot be deleted`;
+          deleteButton.setAttribute("aria-label", deleteButton.title);
+
+          const deleteIcon = document.createElement("span");
+          deleteIcon.className = "material-symbols-outlined";
+          deleteIcon.textContent = "delete";
+          deleteButton.appendChild(deleteIcon);
+
+          deleteButton.addEventListener("mousedown", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          });
+
+          deleteButton.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (canDelete && typeof app.removeStackedPanelSlot === "function") {
+              app.removeStackedPanelSlot(slot);
+            }
+          });
+
+          group.appendChild(deleteButton);
+
+          return group;
+        };
+
+        stackedPanelList.appendChild(
+          createStackButtonGroup({
+            slot: "Top",
+            label: "Top Panel",
+            exists: true,
+            canDelete: stackInfo.hasBottom,
+            title: "Edit the upper panel",
+          })
+        );
+
+        stackedPanelList.appendChild(
+          createStackButtonGroup({
+            slot: "Bottom",
+            label: stackInfo.hasBottom ? "Bottom Panel" : "+ Bottom Panel",
+            exists: stackInfo.hasBottom,
+            canDelete: stackInfo.hasBottom,
+            title: stackInfo.hasBottom
+              ? "Edit the lower panel"
+              : "Add a yellow panel below this panel",
+            hasOptions: true,
+          })
+        );
+      };
+
+      const renderSubPanelDividerControls = (sign) => {
+        const dividerSettings = document.getElementById("subPanelDividerSettings");
+        const dividerList = document.getElementById("subPanelDividerToggleList");
+
+        if (!dividerSettings || !dividerList || !sign || !Array.isArray(sign.subPanels)) {
+          return;
+        }
+
+        dividerList.replaceChildren();
+
+        const dividerCount = Math.max(0, sign.subPanels.length - 1);
+
+        dividerSettings.hidden = dividerCount === 0;
+
+        if (dividerCount === 0) {
+          return;
+        }
+
+        for (let dividerIndex = 0; dividerIndex < dividerCount; dividerIndex++) {
+          const isVisible =
+            !exposed ||
+            typeof exposed.isSubpanelDividerVisible !== "function"
+              ? true
+              : exposed.isSubpanelDividerVisible(dividerIndex);
+
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className =
+            "subPanelDividerToggle" + (isVisible ? " active" : "");
+          button.setAttribute("aria-pressed", String(isVisible));
+          button.dataset.dividerIndex = String(dividerIndex);
+          button.textContent = `Divider ${dividerIndex + 1}`;
+          button.title = isVisible
+            ? `Click to hide the divider between Subpanels ${dividerIndex + 1} and ${dividerIndex + 2}`
+            : `Click to show the divider between Subpanels ${dividerIndex + 1} and ${dividerIndex + 2}`;
+
+          button.addEventListener("click", () => {
+            if (
+              exposed &&
+              typeof exposed.setSubpanelDividerVisible === "function"
+            ) {
+              exposed.setSubpanelDividerVisible(dividerIndex, !isVisible);
+            }
+          });
+
+          dividerList.appendChild(button);
+        }
+      };
+
     subPanelList.appendChild(
       createSubPanelTab({
         id: "globalTop",
@@ -11425,6 +12371,9 @@ const getPostThicknessFallback = () =>
         })
       );
     }
+
+    renderSubPanelDividerControls(panel.sign);
+    renderStackedPanelControls();
 
     for (
       let exitTabIndex = 0, exitTabLength = panel.exitTabs.length;
@@ -11887,142 +12836,167 @@ const getPostThicknessFallback = () =>
 
           const aplArrows = panel.sign.aplArrows || [];
           const subPanelCount = panel.sign.subPanels.length;
+          const aplSubpanelGroups =
+            exposed && typeof exposed.getAPLSubpanelGroups === "function"
+              ? exposed.getAPLSubpanelGroups()
+              : Array.from({ length: subPanelCount }, (_, index) => ({
+                  start: index,
+                  end: index,
+                  indices: [index],
+                  groupIndex: index,
+                  label: `Subpanel ${index + 1}`,
+                }));
+
+          const selectedGroup =
+            aplSubpanelGroups.find((group) =>
+              group.indices.includes(selectedSubPanelIndex)
+            ) || aplSubpanelGroups[0];
+
+          if (selectedSubpanelStatus) {
+            selectedSubpanelStatus.textContent =
+              "Selected Subpanel: " +
+              (selectedGroup ? selectedGroup.label : "Subpanel 1");
+          }
 
           aplVisualArrowOrder = [];
 
-          for (let orderSubPanelIndex = 0; orderSubPanelIndex < subPanelCount; orderSubPanelIndex++) {
+          aplSubpanelGroups.forEach((group, groupOrderIndex) => {
             aplArrows.forEach((arrow, index) => {
               if (
                 arrow.placement !== "divider" &&
-                arrow.subPanelIndex === orderSubPanelIndex
+                group.indices.includes(arrow.subPanelIndex)
               ) {
                 aplVisualArrowOrder.push(index);
               }
             });
 
-            if (orderSubPanelIndex < subPanelCount - 1) {
+            if (groupOrderIndex < aplSubpanelGroups.length - 1) {
               aplArrows.forEach((arrow, index) => {
                 if (
                   arrow.placement === "divider" &&
-                  arrow.dividerAfterSubPanelIndex === orderSubPanelIndex
+                  arrow.dividerAfterSubPanelIndex === group.end
                 ) {
                   aplVisualArrowOrder.push(index);
                 }
               });
             }
-          }
-
-          for (let subPanelIndex = 0; subPanelIndex < subPanelCount; subPanelIndex++) {
-          const subPanelSection = document.createElement("div");
-          subPanelSection.className =
-            "aplSubpanelSection" +
-            (subPanelIndex === selectedSubPanelIndex ? " selected" : "");
-
-          const sectionHeader = document.createElement("div");
-          sectionHeader.className = "aplSubpanelSectionHeader";
-          sectionHeader.textContent = "Subpanel " + (subPanelIndex + 1);
-
-          sectionHeader.addEventListener("click", () => {
-            exposed.changeEditingSubPanel(subPanelIndex);
           });
 
-          subPanelSection.appendChild(sectionHeader);
+          aplSubpanelGroups.forEach((group, groupOrderIndex) => {
+            const subPanelSection = document.createElement("div");
+            subPanelSection.className =
+              "aplSubpanelSection" +
+              (group.indices.includes(selectedSubPanelIndex) ? " selected" : "");
 
-          const sectionArrows = aplArrows
-            .map((arrow, index) => ({ arrow, index }))
-            .filter(
-              ({ arrow }) =>
-                arrow.placement !== "divider" &&
-                arrow.subPanelIndex === subPanelIndex
-            );
+            const sectionHeader = document.createElement("div");
+            sectionHeader.className = "aplSubpanelSectionHeader";
+            sectionHeader.textContent = group.label;
 
-          subPanelSection.appendChild(
-            createAPLDropZone({
-              placement: "subpanel",
-              subPanelIndex,
-            })
-          );
-
-              sectionArrows.forEach(({ arrow, index }, localIndex) => {
-                if (localIndex === 0 && subPanelIndex > 0) {
-                  const dividerBeforeThisSubpanel = aplArrows.some(
-                    (candidate) =>
-                      candidate.placement === "divider" &&
-                      candidate.dividerAfterSubPanelIndex === subPanelIndex - 1
-                  );
-
-                  if (dividerBeforeThisSubpanel) {
-                    const beforeSpacingRow = createAPLBeforeSpacingRow(index, arrow);
-                    if (beforeSpacingRow) {
-                      subPanelSection.appendChild(beforeSpacingRow);
-                    }
-                  }
-                }
-
-                subPanelSection.appendChild(
-                  createAPLArrowRow(arrow, index, sectionArrows, localIndex)
-                );
-
-                  const hasDividerAfterSubpanel = aplArrows.some(
-                    (candidate) =>
-                      candidate.placement === "divider" &&
-                      candidate.dividerAfterSubPanelIndex === subPanelIndex
-                  );
-
-                  const isLastArrowInSubpanel =
-                    localIndex === sectionArrows.length - 1;
-
-                  if (
-                    localIndex < sectionArrows.length - 1 ||
-                    (isLastArrowInSubpanel && hasDividerAfterSubpanel)
-                  ) {
-                    const spacingRow = createAPLSpacingRow(index, arrow);
-                    if (spacingRow) {
-                      subPanelSection.appendChild(spacingRow);
-                    }
-                  }
-              });
-
-          const addToSubpanelButton = document.createElement("button");
-          addToSubpanelButton.type = "button";
-          addToSubpanelButton.textContent = "Add arrow to Subpanel " + (subPanelIndex + 1);
-
-          addToSubpanelButton.addEventListener("click", () => {
-            exposed.changeEditingSubPanel(subPanelIndex);
-
-            exposed.addAPLArrow(null, {
-              placement: "subpanel",
-              subPanelIndex,
+            sectionHeader.addEventListener("click", () => {
+              exposed.changeEditingSubPanel(group.start);
             });
-          });
 
-          subPanelSection.appendChild(addToSubpanelButton);
-          aplArrowList.appendChild(subPanelSection);
+            subPanelSection.appendChild(sectionHeader);
 
-          if (subPanelIndex < subPanelCount - 1) {
-            const dividerSection = document.createElement("div");
-            dividerSection.className = "aplDividerSection";
-
-            const dividerHeader = document.createElement("div");
-            dividerHeader.className = "aplDividerSectionHeader";
-              dividerHeader.textContent = "Divider " + (subPanelIndex + 1);
-
-            dividerSection.appendChild(dividerHeader);
-
-            dividerSection.appendChild(
-              createAPLDropZone({
-                placement: "divider",
-                dividerAfterSubPanelIndex: subPanelIndex,
-              })
-            );
-
-            const dividerArrows = aplArrows
+            const sectionArrows = aplArrows
               .map((arrow, index) => ({ arrow, index }))
               .filter(
                 ({ arrow }) =>
-                  arrow.placement === "divider" &&
-                  arrow.dividerAfterSubPanelIndex === subPanelIndex
+                  arrow.placement !== "divider" &&
+                  group.indices.includes(arrow.subPanelIndex)
               );
+
+            subPanelSection.appendChild(
+              createAPLDropZone({
+                placement: "subpanel",
+                subPanelIndex: group.start,
+              })
+            );
+
+            sectionArrows.forEach(({ arrow, index }, localIndex) => {
+              if (localIndex === 0 && group.start > 0) {
+                const dividerBeforeGroup = group.start - 1;
+                const dividerBeforeThisGroup = aplArrows.some(
+                  (candidate) =>
+                    candidate.placement === "divider" &&
+                    candidate.dividerAfterSubPanelIndex === dividerBeforeGroup
+                );
+
+                if (dividerBeforeThisGroup) {
+                  const beforeSpacingRow = createAPLBeforeSpacingRow(index, arrow);
+                  if (beforeSpacingRow) {
+                    subPanelSection.appendChild(beforeSpacingRow);
+                  }
+                }
+              }
+
+              subPanelSection.appendChild(
+                createAPLArrowRow(arrow, index, sectionArrows, localIndex)
+              );
+
+              const hasDividerAfterGroup =
+                groupOrderIndex < aplSubpanelGroups.length - 1 &&
+                aplArrows.some(
+                  (candidate) =>
+                    candidate.placement === "divider" &&
+                    candidate.dividerAfterSubPanelIndex === group.end
+                );
+
+              const isLastArrowInSubpanel =
+                localIndex === sectionArrows.length - 1;
+
+              if (
+                localIndex < sectionArrows.length - 1 ||
+                (isLastArrowInSubpanel && hasDividerAfterGroup)
+              ) {
+                const spacingRow = createAPLSpacingRow(index, arrow);
+                if (spacingRow) {
+                  subPanelSection.appendChild(spacingRow);
+                }
+              }
+            });
+
+            const addToSubpanelButton = document.createElement("button");
+            addToSubpanelButton.type = "button";
+            addToSubpanelButton.textContent = "Add arrow to " + group.label;
+
+            addToSubpanelButton.addEventListener("click", () => {
+              exposed.changeEditingSubPanel(group.start);
+
+              exposed.addAPLArrow(null, {
+                placement: "subpanel",
+                subPanelIndex: group.start,
+              });
+            });
+
+            subPanelSection.appendChild(addToSubpanelButton);
+            aplArrowList.appendChild(subPanelSection);
+
+            if (groupOrderIndex < aplSubpanelGroups.length - 1) {
+              const dividerIndex = group.end;
+              const dividerSection = document.createElement("div");
+              dividerSection.className = "aplDividerSection";
+
+              const dividerHeader = document.createElement("div");
+              dividerHeader.className = "aplDividerSectionHeader";
+              dividerHeader.textContent = "Divider " + (dividerIndex + 1);
+
+              dividerSection.appendChild(dividerHeader);
+
+              dividerSection.appendChild(
+                createAPLDropZone({
+                  placement: "divider",
+                  dividerAfterSubPanelIndex: dividerIndex,
+                })
+              );
+
+              const dividerArrows = aplArrows
+                .map((arrow, index) => ({ arrow, index }))
+                .filter(
+                  ({ arrow }) =>
+                    arrow.placement === "divider" &&
+                    arrow.dividerAfterSubPanelIndex === dividerIndex
+                );
 
               dividerArrows.forEach(({ arrow, index }, localIndex) => {
                 dividerSection.appendChild(
@@ -12035,18 +13009,19 @@ const getPostThicknessFallback = () =>
                 addDividerArrowButton.type = "button";
                 addDividerArrowButton.textContent = "Add divider arrow";
 
-                  addDividerArrowButton.addEventListener("click", () => {
-                    exposed.addAPLArrow(null, {
-                      placement: "divider",
-                      dividerAfterSubPanelIndex: subPanelIndex,
-                    });
+                addDividerArrowButton.addEventListener("click", () => {
+                  exposed.addAPLArrow(null, {
+                    placement: "divider",
+                    dividerAfterSubPanelIndex: dividerIndex,
                   });
+                });
 
                 dividerSection.appendChild(addDividerArrowButton);
               }
+
               aplArrowList.appendChild(dividerSection);
-          }
-        }
+            }
+          });
 
         if (
           aplArrowTypeSelect &&
@@ -12476,19 +13451,21 @@ const getPostThicknessFallback = () =>
         sMControlRow.appendChild(textEditorBlock);
         textEditorBlock.addEventListener("dragstart", handleBlockDragStart);
         textEditorBlock.addEventListener("dragend", handleBlockDragEnd);
-        textEditorBlock.addEventListener(
-          "click",
-          (event) => {
-            if (textEditorBlock.dataset.dragging === "true") {
-              event.preventDefault();
-              return;
-            }
+        textEditorBlock.addEventListener("click", (event) => {
+          event.stopPropagation();
 
+          if (textEditorBlock.dataset.dragging === "true") {
+            event.preventDefault();
+            return;
+          }
+
+          if (typeof exposed.setSelectedRowAndBlock === "function") {
+            exposed.setSelectedRowAndBlock(row, item);
+          } else {
             exposed.setSelectedRow(row);
             exposed.setSelectedControlElem(item);
-          },
-          { once: true }
-        );
+          }
+        });
       }
 
       sMSPTextList.appendChild(sMControlRow);
@@ -12500,13 +13477,13 @@ const getPostThicknessFallback = () =>
       sMControlRow.addEventListener("dragover", handleRowDragOver);
       sMControlRow.addEventListener("dragleave", handleRowDragLeave);
       sMControlRow.addEventListener("drop", handleRowDrop);
-      sMControlRow.addEventListener(
-        "click",
-        () => {
+      sMControlRow.addEventListener("click", () => {
+        if (typeof exposed.setSelectedRowAndBlock === "function") {
+          exposed.setSelectedRowAndBlock(row, 0);
+        } else {
           exposed.setSelectedRow(row);
-        },
-        { once: true }
-      );
+        }
+      });
     }
 
     // Attach row list container drag events for row reordering
@@ -12536,6 +13513,33 @@ const getPostThicknessFallback = () =>
       Control.prototype.blockInternalElements[
       Control.prototype.blockToClassElems.getElem(currentBlockElem)
       ];
+
+    if (blockElemType === "sdIcon") {
+      const normalizeIconNumber = (value, fallback = 0) => {
+        const parsed = parseFloat(
+          value !== null && value !== undefined ? value : fallback
+        );
+        return Number.isFinite(parsed) ? parsed : fallback;
+      };
+
+      const legacyIconSpacing = normalizeIconNumber(currentBlockElem.spacing, 0);
+      currentBlockElem.paddingHorizontal = normalizeIconNumber(
+        currentBlockElem.paddingHorizontal,
+        legacyIconSpacing
+      );
+      currentBlockElem.paddingVertical = normalizeIconNumber(
+        currentBlockElem.paddingVertical,
+        0
+      );
+      currentBlockElem.spacing = 0;
+      currentBlockElem.invertColors =
+        currentBlockElem.invertColors === true ||
+        currentBlockElem.invertColors === "true" ||
+        currentBlockElem.invertColors === 1 ||
+        currentBlockElem.invertColors === "1" ||
+        currentBlockElem.invertColors === "on";
+      setupSdIconEditorControls();
+    }
 
     if (blockElemType === "sdArrow") {
       const normalizePadding = (value, fallback = 0) => {
@@ -12722,6 +13726,11 @@ const getPostThicknessFallback = () =>
       }
     }
 
+    if (blockElemType === "sdIcon") {
+      setupSdIconEditorControls();
+      updateSdIconExtraControls(currentBlockElem);
+    }
+
     if (blockElemType === "sdArrow") {
       const arrowRotationButtons = document.querySelectorAll(
         ".sdArrow_rotationPreset"
@@ -12747,30 +13756,26 @@ const getPostThicknessFallback = () =>
       }
     }
 
+    const currentBlockProperties = currentBlockElements?.blockProperties || [];
+    const selectedBlockProperties =
+      currentBlockProperties[exposed.vars.currentlySelectedRowIndex] || new Block();
+
     document.querySelector("#sdBlock_topPadding").value =
-      sign.blockElements.blockProperties[
-        exposed.vars.currentlySelectedRowIndex
-      ].topPadding;
+      selectedBlockProperties.topPadding;
     document
       .querySelector("#sdBlock_topPadding")
       .addEventListener("change", readForm, { once: true });
 
     document.querySelector("#sdBlock_bottomPadding").value =
-      sign.blockElements.blockProperties[
-        exposed.vars.currentlySelectedRowIndex
-      ].bottomPadding;
+      selectedBlockProperties.bottomPadding;
     document
       .querySelector("#sdBlock_bottomPadding")
       .addEventListener("change", readForm, { once: true });
 
     const topPadValEl = document.querySelector("#sdBlock_topPaddingVal");
     const bottomPadValEl = document.querySelector("#sdBlock_bottomPaddingVal");
-    const topPadValue =
-      sign.blockElements.blockProperties[exposed.vars.currentlySelectedRowIndex]
-        .topPadding;
-    const bottomPadValue =
-      sign.blockElements.blockProperties[exposed.vars.currentlySelectedRowIndex]
-        .bottomPadding;
+    const topPadValue = selectedBlockProperties.topPadding;
+    const bottomPadValue = selectedBlockProperties.bottomPadding;
     if (topPadValEl) {
       if (topPadValEl.tagName === "INPUT" && topPadValEl.type === "number") {
         topPadValEl.value = topPadValue;
@@ -12790,9 +13795,7 @@ const getPostThicknessFallback = () =>
     }
 
     document.querySelector("#sdBlock_backgroundColor").value =
-      sign.blockElements.blockProperties[
-        exposed.vars.currentlySelectedRowIndex
-      ].backgroundColor;
+      selectedBlockProperties.backgroundColor;
 
     document
       .querySelector("#sdBlock_backgroundColor")
@@ -12801,9 +13804,7 @@ const getPostThicknessFallback = () =>
     const blockBorderColorEl = document.querySelector("#sdBlock_borderColor");
     if (blockBorderColorEl) {
       const storedBorderColor =
-        sign.blockElements.blockProperties[
-          exposed.vars.currentlySelectedRowIndex
-        ].borderColor;
+        selectedBlockProperties.borderColor;
       blockBorderColorEl.value =
         storedBorderColor || Block.defaultBorderColor || "Match BG";
       blockBorderColorEl.addEventListener("blur", readForm, { once: true });
@@ -12813,17 +13814,13 @@ const getPostThicknessFallback = () =>
       "#sdBlock_backgroundFullWidth"
     );
     blockBackgroundFullWidthEl.checked =
-      !!sign.blockElements.blockProperties[
-        exposed.vars.currentlySelectedRowIndex
-      ].backgroundFullWidth;
+      !!selectedBlockProperties.backgroundFullWidth;
     blockBackgroundFullWidthEl.addEventListener("change", readForm, {
       once: true,
     });
 
     document.querySelector("#sdBlock_width").value =
-      sign.blockElements.blockProperties[
-        exposed.vars.currentlySelectedRowIndex
-      ].width;
+      selectedBlockProperties.width;
     document
       .querySelector("#sdBlock_width")
       .addEventListener("change", readForm, { once: true });
@@ -12833,25 +13830,19 @@ const getPostThicknessFallback = () =>
       .addEventListener("change", readForm, { once: true });
 
     document.querySelector("#sdBlock_stretchLeft").checked =
-      sign.blockElements.blockProperties[
-        exposed.vars.currentlySelectedRowIndex
-      ].stretchLeft;
+      selectedBlockProperties.stretchLeft;
 
     document
       .querySelector("#sdBlock_stretchCenter")
       .addEventListener("change", readForm, { once: true });
     document.querySelector("#sdBlock_stretchCenter").checked =
-      sign.blockElements.blockProperties[
-        exposed.vars.currentlySelectedRowIndex
-      ].stretchCenter;
+      selectedBlockProperties.stretchCenter;
 
     document
       .querySelector("#sdBlock_stretchRight")
       .addEventListener("change", readForm, { once: true });
     document.querySelector("#sdBlock_stretchRight").checked =
-      sign.blockElements.blockProperties[
-        exposed.vars.currentlySelectedRowIndex
-      ].stretchRight;
+      selectedBlockProperties.stretchRight;
 
     /*
     // Old Control Text
@@ -12925,10 +13916,7 @@ const getPostThicknessFallback = () =>
       ? "invisible"
       : "";
     exitOnlyPaddingLabel.className =
-      !panel.sign.guideArrow.includes("Exit Only") ||
-        panel.sign.guideArrow == "Split Exit Only"
-        ? "invisible"
-        : "";
+      panel.sign.guideArrow === "None" ? "invisible" : "";
     showExitOnlyLabel.className = !panel.sign.guideArrow.includes("Exit Only")
       ? "invisible"
       : "";
@@ -12941,10 +13929,7 @@ const getPostThicknessFallback = () =>
       ? "invisible"
       : "";
     exitOnlyPadding.className =
-      !panel.sign.guideArrow.includes("Exit Only") ||
-        panel.sign.guideArrow == "Split Exit Only"
-        ? "invisible"
-        : "";
+      panel.sign.guideArrow === "None" ? "invisible" : "";
     showExitOnly.className = !panel.sign.guideArrow.includes("Exit Only")
       ? "invisible"
       : "";
@@ -12980,10 +13965,7 @@ const getPostThicknessFallback = () =>
       exitOnlyRightTextInput.value = panel.sign.exitOnlyRightText || "";
     }
     paddingValue.className =
-      !panel.sign.guideArrow.includes("Exit Only") ||
-        panel.sign.guideArrow == "Split Exit Only"
-        ? "invisible"
-        : "";
+      panel.sign.guideArrow === "None" ? "invisible" : "";
     if (exitOnlyBorderModeLabel && exitOnlyBorderModeSelect) {
       const shouldShowBorderMode =
         !post.secondExitOnly &&

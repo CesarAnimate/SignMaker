@@ -50,9 +50,10 @@
 	top: -0.4rem;
 }
 
-.bannerA:not(.TOLL, .noIndent):first-letter,
-.bannerB:not(.TOLL, .noIndent):first-letter {
-	font-size: calc(var(--fontSize) + 0.3rem);
+.bannerA:not(.TOLL, .noIndent, .exportRealFirstLetter):first-letter,
+.bannerB:not(.TOLL, .noIndent, .exportRealFirstLetter):first-letter {
+  font-size: calc(var(--fontSize) + 0.3rem);
+  font-weight: 1 !important;
 }
 
 .bE-shieldElement {
@@ -191,9 +192,10 @@
 	font-size: calc(var(--fontSize) * var(--bannerScale, 1));
 }
 
-.bE-shieldElement .bannerA:not(.TOLL, .noIndent):first-letter,
-.bE-shieldElement .bannerB:not(.TOLL, .noIndent):first-letter {
-	font-size: calc((var(--fontSize) + 0.3rem) * var(--bannerScale, 1));
+.bE-shieldElement .bannerA:not(.TOLL, .noIndent, .exportRealFirstLetter):first-letter,
+.bE-shieldElement .bannerB:not(.TOLL, .noIndent, .exportRealFirstLetter):first-letter {
+  font-size: calc((var(--fontSize) + 0.3rem) * var(--bannerScale, 1));
+  font-weight: 1 !important;
 }
 
 .bE-shieldElement .to {

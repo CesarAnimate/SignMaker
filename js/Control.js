@@ -49,58 +49,149 @@ class TextElement {
   }
 
   splitString() {
-    let result = [this.textContent];
-    let tagged = [];
+    const escapeRegExp = (value) =>
+      String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-    // Define the banner types to split by if useBannerFormating is true
-    const numeralPattern = /(\d+\S*)|([\u00BC-\u00BE]+\S*)/;
-    const lightNumeralPattern = new RegExp(
-      numeralPattern.source + "|" + Object.values(fractionMap).join("|"),
-      "g"
-    );
+    const rawText = String(this.textContent ?? "")
+      .replace(/\\t/g, "\t")
+      .replace(/\\n/g, "\n");
 
-    const bannerPattern = new RegExp(
-      `(\\s*)(\\b(?:${Shield.prototype.bannerTypes.join("|")})\\b)(\\s*)`,
-      "gi"
-    );
-    const lightBannerPattern = new RegExp(
-      `(\\b(?:${Shield.prototype.bannerTypes.join("|")})\\b)`,
-      "gi"
-    );
+    const textWithFractions = this.useNumeralFormatting
+      ? rawText.replace(fractionRegex, (match) => fractionMap[match])
+      : rawText;
 
-    if (this.useBannerFormatting) {
-      result = result[0].split(bannerPattern).filter(Boolean);
-    }
+    const bannerTypes =
+      typeof Shield !== "undefined" &&
+      Shield.prototype &&
+      Array.isArray(Shield.prototype.bannerTypes)
+        ? Shield.prototype.bannerTypes
+        : [];
 
-    if (this.useNumeralFormatting) {
-      let newResult = [];
-      for (let i = 0; i < result.length; i++) {
-        let currentResult = result[i]
-          .split(numeralPattern)
-          .filter(Boolean)
-          .map((val) =>
-            val.replace(fractionRegex, (match) => fractionMap[match])
-          );
-        newResult = newResult.concat(currentResult);
+    const bannerRegex =
+      this.useBannerFormatting && bannerTypes.length
+        ? new RegExp(
+            `^(?:${bannerTypes
+              .slice()
+              .sort((a, b) => String(b).length - String(a).length)
+              .map(escapeRegExp)
+              .join("|")})\\b`,
+            "i"
+          )
+        : null;
+
+    const fractionChars = Object.values(fractionMap).map(escapeRegExp).join("");
+    const fractionTokenRegex = new RegExp(`^[${fractionChars}]`);
+    const routeNumeralRegex = /^\d+(?:[A-Za-z]{1,2}(?![A-Za-z]))?(?:(?:-[A-Za-z]{1,2}(?![A-Za-z]))+|\s+[A-Za-z]{1,2}(?![A-Za-z])(?:-[A-Za-z]{1,2}(?![A-Za-z]))*)?/;
+
+    const tokens = [];
+    let index = 0;
+
+    const pushTextToken = (value) => {
+      if (value) {
+        tokens.push({ type: "text", value });
       }
-      result = newResult;
-    }
+    };
 
-    result = result.map((val) =>
-      val.replace(/\\t/g, "\t").replace(/\\n/g, "\n")
-    );
-    for (let i = 0; i < result.length; i++) {
-      let r = result[i];
-      if (lightNumeralPattern.test(r) && this.useNumeralFormatting) {
-        tagged[i] = { type: "numeral", value: r };
-      } else if (lightBannerPattern.test(r) && this.useBannerFormatting) {
-        tagged[i] = { type: "banner", value: r };
+    while (index < textWithFractions.length) {
+      const remaining = textWithFractions.slice(index);
+
+      if (bannerRegex) {
+        const bannerMatch = remaining.match(bannerRegex);
+        if (bannerMatch && bannerMatch[0]) {
+          tokens.push({ type: "banner", value: bannerMatch[0] });
+          index += bannerMatch[0].length;
+          continue;
+        }
+      }
+
+      if (this.useNumeralFormatting) {
+        const fractionMatch = remaining.match(fractionTokenRegex);
+        if (fractionMatch && fractionMatch[0]) {
+          tokens.push({ type: "numeral", value: fractionMatch[0], numeralKind: "fraction" });
+          index += fractionMatch[0].length;
+          continue;
+        }
+
+        const routeNumeralMatch = remaining.match(routeNumeralRegex);
+        if (routeNumeralMatch && routeNumeralMatch[0]) {
+          tokens.push({ type: "numeral", value: routeNumeralMatch[0], numeralKind: "route" });
+          index += routeNumeralMatch[0].length;
+          continue;
+        }
+      }
+
+      let nextSpecialIndex = remaining.length;
+
+      if (bannerRegex) {
+        for (let offset = 1; offset < remaining.length; offset++) {
+          if (remaining.slice(offset).match(bannerRegex)) {
+            nextSpecialIndex = Math.min(nextSpecialIndex, offset);
+            break;
+          }
+        }
+      }
+
+      if (this.useNumeralFormatting) {
+        for (let offset = 1; offset < remaining.length; offset++) {
+          const slice = remaining.slice(offset);
+          if (slice.match(fractionTokenRegex) || slice.match(routeNumeralRegex)) {
+            nextSpecialIndex = Math.min(nextSpecialIndex, offset);
+            break;
+          }
+        }
+      }
+
+      if (nextSpecialIndex <= 0 || nextSpecialIndex === remaining.length) {
+        pushTextToken(remaining.charAt(0));
+        index += 1;
       } else {
-        tagged[i] = { type: "text", value: r };
+        pushTextToken(remaining.slice(0, nextSpecialIndex));
+        index += nextSpecialIndex;
       }
     }
 
-    return tagged;
+    const isPlainSpaceToken = (token) =>
+      token && token.type === "text" && /^[ \t]+$/.test(String(token.value || ""));
+
+    const isNumeralToken = (token) => token && token.type === "numeral";
+    const isFractionNumeralToken = (token) =>
+      isNumeralToken(token) &&
+      (token.numeralKind === "fraction" || /^[\u00BC-\u00BE\u2150-\u215E]+$/.test(String(token.value || "")));
+    const endsWithInputNumber = (token) => /\d$/.test(String(token?.value || ""));
+
+    const spacedTokens = tokens.map((token, tokenIndex) => {
+      if (!this.useNumeralFormatting || !isPlainSpaceToken(token)) {
+        return token;
+      }
+
+      const previousToken = tokens[tokenIndex - 1];
+      const nextToken = tokens[tokenIndex + 1];
+
+      if (
+        endsWithInputNumber(previousToken) &&
+        isFractionNumeralToken(nextToken)
+      ) {
+        return { ...token, type: "tightNumeralSpace" };
+      }
+
+      return token;
+    });
+
+    return spacedTokens.reduce((mergedTokens, token) => {
+      const previousToken = mergedTokens[mergedTokens.length - 1];
+
+      if (
+        previousToken &&
+        previousToken.type === "text" &&
+        token.type === "text"
+      ) {
+        previousToken.value += token.value;
+      } else {
+        mergedTokens.push(token);
+      }
+
+      return mergedTokens;
+    }, []);
   }
 
   createElement(panel) {
@@ -133,6 +224,11 @@ class TextElement {
         ).toLowerCase()
     );
     newText.style.setProperty("--alignment", this.alignment);
+    newText.style.setProperty(
+      "--alignmentCss",
+      String(this.alignment || "Center").toLowerCase()
+    );
+    newText.style.textAlign = String(this.alignment || "Center").toLowerCase();
     newText.style.setProperty("--numeralSize", this.numeralFormattingSize);
     newText.style.setProperty("--bannerSize", this.bannerFormattingSize);
     newText.style.setProperty(
@@ -158,14 +254,111 @@ class TextElement {
       newText.style.color = "white";
     }
 
-    let splitTextContent = this.splitString();
-    for (let i = 0; i < splitTextContent.length; i++) {
-      let text = splitTextContent[i];
+    const appendTextWithRealFirstLetter = (fragment, value) => {
+      const textValue = String(value ?? "");
+      const firstVisibleMatch = textValue.match(/\S/);
+
+      if (!firstVisibleMatch) {
+        fragment.textContent = textValue;
+        return;
+      }
+
+      fragment.classList.add("bE-realBannerFirstLetter");
+
+      const firstIndex = firstVisibleMatch.index;
+      const beforeFirst = textValue.slice(0, firstIndex);
+      const firstLetter = textValue.charAt(firstIndex);
+      const afterFirst = textValue.slice(firstIndex + 1);
+
+      if (beforeFirst) {
+        fragment.appendChild(document.createTextNode(beforeFirst));
+      }
+
+      const firstLetterSpan = document.createElement("span");
+      firstLetterSpan.className = "bE-bannerFirstLetter";
+      firstLetterSpan.textContent = firstLetter;
+      fragment.appendChild(firstLetterSpan);
+
+      if (afterFirst) {
+        fragment.appendChild(document.createTextNode(afterFirst));
+      }
+    };
+
+    const appendNumeralTextWithTightSpaces = (fragment, value) => {
+      const textValue = String(value ?? "");
+      const parts = textValue.split(/([ \t]+)/);
+
+      for (const part of parts) {
+        if (!part) {
+          continue;
+        }
+
+        if (/^[ \t]+$/.test(part)) {
+          const tightSpace = document.createElement("span");
+          tightSpace.className = "bE-tightNumeralSpace bE-tightInternalNumeralSpace";
+          tightSpace.textContent = part;
+          fragment.appendChild(tightSpace);
+        } else {
+          fragment.appendChild(document.createTextNode(part));
+        }
+      }
+    };
+
+    const createTextFragment = (text) => {
       const newTextFragment = document.createElement("span");
       newTextFragment.className = "bE-" + text.type;
-      newTextFragment.textContent = text.value;
 
-      newText.appendChild(newTextFragment);
+      if (text.type === "banner" && this.useBannerFormatting) {
+        appendTextWithRealFirstLetter(newTextFragment, text.value);
+      } else if (text.type === "numeral") {
+        appendNumeralTextWithTightSpaces(newTextFragment, text.value);
+      } else if (text.type === "tightNumeralSpace") {
+        newTextFragment.classList.add("bE-tightSpace");
+        newTextFragment.textContent = text.value || " ";
+      } else {
+        newTextFragment.textContent = text.value;
+      }
+
+      return newTextFragment;
+    };
+
+    const createLineElement = () => {
+      const lineElement = document.createElement("span");
+      lineElement.className = "bE-textLine";
+      return lineElement;
+    };
+
+    let splitTextContent = this.splitString();
+    const lineElements = [createLineElement()];
+
+    for (let i = 0; i < splitTextContent.length; i++) {
+      const text = splitTextContent[i];
+      const textValue = String(text.value ?? "");
+      const lineParts = textValue.split("\n");
+
+      for (let linePartIndex = 0; linePartIndex < lineParts.length; linePartIndex++) {
+        if (linePartIndex > 0) {
+          lineElements.push(createLineElement());
+        }
+
+        const linePart = lineParts[linePartIndex];
+        if (linePart.length === 0) {
+          continue;
+        }
+
+        lineElements[lineElements.length - 1].appendChild(
+          createTextFragment({ ...text, value: linePart })
+        );
+      }
+    }
+
+    if (lineElements.length > 1) {
+      newText.classList.add("bE-multilineTextElement");
+      lineElements.forEach((lineElement) => newText.appendChild(lineElement));
+    } else {
+      while (lineElements[0].firstChild) {
+        newText.appendChild(lineElements[0].firstChild);
+      }
     }
 
     return newText;
@@ -691,75 +884,18 @@ const getCustomShieldMakerDisplayEm = (value, fallback = 0) => {
   return getCustomShieldMakerDisplayNumber(value, fallback) / 100 + "em";
 };
 
-const getCustomShieldMakerVariantKeyFromVariant = (variantKey) => {
-  const raw = String(variantKey || "").trim();
-  const digitMatch = raw.match(/[1-4]/);
-  return digitMatch ? digitMatch[0] : "2";
-};
-
-const getCustomShieldMakerVariantKeyFromRoute = (routeNumber) => {
-  const count = ShieldElement.prototype.getRouteCharacterCount(routeNumber);
-
-  if (count <= 1) {
-    return "1";
-  }
-  if (count === 2) {
-    return "2";
-  }
-  if (count === 3) {
-    return "3";
-  }
-  return "4";
-};
-
-const getCustomShieldMakerVariantLabelFromKey = (variantKey) =>
-  `${getCustomShieldMakerVariantKeyFromVariant(variantKey)} Digit`;
-
-const getCustomShieldMakerVariantFallbackOrder = (variantKey) => {
-  const normalized = getCustomShieldMakerVariantKeyFromVariant(variantKey);
-  const fallbackOrders = {
-    "1": ["1", "2", "3", "4"],
-    "2": ["2", "1", "3", "4"],
-    "3": ["3", "2", "4", "1"],
-    "4": ["4", "3", "2", "1"],
-  };
-
-  return fallbackOrders[normalized] || fallbackOrders["2"];
-};
-
-const getCustomShieldMakerVariantAssetKey = (variantKey) =>
-  `${getCustomShieldMakerVariantKeyFromVariant(variantKey)}Digit`;
-
-const applyCustomShieldMakerLetterSpacing = (routeEl, spacingValue) => {
-  if (!routeEl) {
-    return;
-  }
-
-  routeEl.style.gap = "0";
-  Array.from(routeEl.children).forEach((characterSpan, index) => {
-    characterSpan.style.marginLeft = index === 0 ? "0" : spacingValue;
-  });
-};
-
 const getCustomShieldMakerCssColor = (colorNameOrValue) => {
   const rawColor = String(colorNameOrValue || "Black").trim();
   return (lib.colors && lib.colors[rawColor] ? lib.colors[rawColor] : rawColor).toLowerCase();
 };
 
-const applyCustomShieldMakerRouteStyle = (routeEl, config, variantKey) => {
-  if (!routeEl || (!config?.customRouteStyle && !config?.customRouteStyleByVariant)) {
+const applyCustomShieldMakerRouteStyle = (routeEl, config) => {
+  if (!routeEl || !config?.customRouteStyle) {
     return;
   }
 
-  const customVariantKey = getCustomShieldMakerVariantKeyFromVariant(variantKey);
-  const style =
-    config.customRouteStyleByVariant?.[customVariantKey] ||
-    config.customRouteStyle ||
-    {};
-  const anchor =
-    config.customAnchorByVariant?.[customVariantKey] ||
-    config.customAnchor ||
-    style.anchor || {
+  const style = config.customRouteStyle || {};
+  const anchor = config.customAnchor || style.anchor || {
     x: 50,
     y: 50,
     seedTop: getCustomShieldMakerDisplayNumber(style.topOffset, 0),
@@ -796,10 +932,7 @@ const applyCustomShieldMakerRouteStyle = (routeEl, config, variantKey) => {
   routeEl.style.fontWeight = String(cssWeight);
   routeEl.style.fontVariationSettings = `"wght" ${requestedWeight}`;
   routeEl.style.letterSpacing = "0";
-  applyCustomShieldMakerLetterSpacing(
-    routeEl,
-    getCustomShieldMakerDisplayEm(style.letterSpacing, 0)
-  );
+  routeEl.style.gap = getCustomShieldMakerDisplayEm(style.letterSpacing, 0);
   routeEl.style.position = "absolute";
   routeEl.style.display = "inline-flex";
   routeEl.style.alignItems = "center";
@@ -943,19 +1076,12 @@ class ShieldElement extends Shield {
     );
     const normalizedRoute = `${this.routeNumber ?? ""}`.trim();
     const routeText = normalizedRoute;
-    const routeVariantKey = config?.customShieldMaker
-      ? getCustomShieldMakerVariantAssetKey(
-          getCustomShieldMakerVariantKeyFromRoute(routeText)
-        )
-      : null;
-    const variant = config?.customShieldMaker
-      ? getCustomShieldMakerVariantLabelFromKey(routeVariantKey)
-      : ShieldElement.prototype.resolveBlockVariant(
-          this.shieldType,
-          routeText,
-          config
-        );
-    const variantKey = routeVariantKey || ShieldElement.prototype.formatVariantKey(variant);
+    const variant = ShieldElement.prototype.resolveBlockVariant(
+      this.shieldType,
+      routeText,
+      config
+    );
+    const variantKey = ShieldElement.prototype.formatVariantKey(variant);
     const shieldPath = ShieldElement.prototype.getShieldAssetPath(
       config,
       variantKey
@@ -1160,7 +1286,7 @@ class ShieldElement extends Shield {
         .join("");
 
       if (config?.customShieldMaker) {
-        applyCustomShieldMakerRouteStyle(routeEl, config, variantKey);
+        applyCustomShieldMakerRouteStyle(routeEl, config);
       }
 
       if (ShieldElement.prototype.isCountyShield(config)) {
@@ -2636,12 +2762,6 @@ ShieldElement.prototype.resolveBlockVariant = function (
   routeNumber,
   config
 ) {
-  if (config?.customShieldMaker) {
-    return getCustomShieldMakerVariantLabelFromKey(
-      getCustomShieldMakerVariantKeyFromRoute(routeNumber)
-    );
-  }
-
   const allowed = config?.variants || [];
   if (!allowed.length) {
     return "";
@@ -2696,37 +2816,14 @@ ShieldElement.prototype.getRouteSizeClassFromCount = function (count) {
 
 ShieldElement.prototype.getVariantFromRoute = function (routeNumber, config) {
   const characterCount = ShieldElement.prototype.getRouteCharacterCount(routeNumber);
-  const variants = Array.isArray(config?.variants) ? config.variants : [];
+  const supportsFourDigit =
+    Array.isArray(config?.variants) && config.variants.includes("4 Digit");
 
-  if (characterCount <= 1 && variants.includes("1 Digit")) {
-    return "1 Digit";
-  }
-
-  if (characterCount === 2 && variants.includes("2 Digit")) {
-    return "2 Digit";
-  }
-
-  if (characterCount === 3 && variants.includes("3 Digit")) {
-    return "3 Digit";
-  }
-
-  if (characterCount >= 4 && variants.includes("4 Digit")) {
+  if (supportsFourDigit && characterCount >= 4) {
     return "4 Digit";
   }
 
-  if (characterCount >= 4 && variants.includes("3 Digit")) {
-    return "3 Digit";
-  }
-
-  if (characterCount >= 3 && variants.includes("3 Digit")) {
-    return "3 Digit";
-  }
-
-  if (variants.includes("2 Digit")) {
-    return "2 Digit";
-  }
-
-  return variants[0] || "2 Digit";
+  return characterCount >= 3 ? "3 Digit" : "2 Digit";
 };
 
 ShieldElement.prototype.getContainerSizeClass = function (routeNumber) {
@@ -2742,15 +2839,6 @@ ShieldElement.prototype.getImageSizeClass = function (routeNumber) {
 };
 
 ShieldElement.prototype.getShieldAssetPath = function (config, variantKey) {
-  if (config?.customShieldMaker && config?.assetPathByVariant) {
-    for (const fallbackVariant of getCustomShieldMakerVariantFallbackOrder(variantKey)) {
-      const fallbackAssetKey = getCustomShieldMakerVariantAssetKey(fallbackVariant);
-      if (config.assetPathByVariant[fallbackAssetKey]) {
-        return config.assetPathByVariant[fallbackAssetKey];
-      }
-    }
-  }
-
   if (config?.assetPathByVariant && config.assetPathByVariant[variantKey]) {
     return config.assetPathByVariant[variantKey];
   }
@@ -2951,12 +3039,24 @@ class IconElement {
       0
     );
 
+    const paddingHorizontal = Object.prototype.hasOwnProperty.call(options, "paddingHorizontal")
+      ? options.paddingHorizontal
+      : spacing;
+
+    const paddingVertical = Object.prototype.hasOwnProperty.call(options, "paddingVertical")
+      ? options.paddingVertical
+      : 0;
+
     const alignment = getStoredDefaultsOption(
       options,
       "alignment",
       "settingsDefaultsIconAlignment",
       "Center"
     );
+
+    const invertColors = Object.prototype.hasOwnProperty.call(options, "invertColors")
+      ? options.invertColors
+      : false;
 
     this.icon = IconElement.prototype.icons[icon]
       ? icon
@@ -2966,36 +3066,96 @@ class IconElement {
     this.border = normalizeStoredDefaultsBoolean(border);
     this.borderRadius = normalizeStoredDefaultsNumber(borderRadius, 4);
     this.borderColor = borderColor;
-    this.spacing = normalizeStoredDefaultsNumber(spacing, 0);
+    this.spacing = 0;
+    this.paddingHorizontal = normalizeStoredDefaultsNumber(paddingHorizontal, 0);
+    this.paddingVertical = normalizeStoredDefaultsNumber(paddingVertical, 0);
     this.alignment = normalizeStoredDefaultsAlignment(alignment);
+    this.invertColors = normalizeStoredDefaultsBoolean(invertColors);
   }
   
   createElement() {
     const container = document.createElement("div");
     container.className = "bE-iconElement";
+    container.style.display = "inline-grid";
+    container.style.gridTemplateColumns = "auto";
+    container.style.gridTemplateRows = "auto";
+    container.style.placeItems = "center";
+    container.style.width = "max-content";
+    container.style.height = "max-content";
+    container.style.minWidth = "0";
+    container.style.minHeight = "0";
+    container.style.boxSizing = "border-box";
+    container.style.fontSize = "0";
+    container.style.lineHeight = "0";
+    container.style.setProperty("padding", "0", "important");
+    container.style.setProperty("background", "transparent", "important");
+    container.style.setProperty("border", "0", "important");
 
     const parsedSpacing = parseFloat(this.spacing);
-    const spacing = isNaN(parsedSpacing) ? 0 : parsedSpacing;
-    container.style.setProperty("--spacing", spacing + "rem");
+    const spacing = Number.isFinite(parsedSpacing) ? parsedSpacing : 0;
+    const parsedHorizontalPadding = parseFloat(this.paddingHorizontal);
+    const horizontalPadding = Number.isFinite(parsedHorizontalPadding)
+      ? parsedHorizontalPadding
+      : 0;
+    const parsedVerticalPadding = parseFloat(this.paddingVertical);
+    const verticalPadding = Number.isFinite(parsedVerticalPadding)
+      ? parsedVerticalPadding
+      : 0;
 
-    const resolvedBgColor = lib.colors[this.backgroundColor] || this.backgroundColor.toLowerCase();
-    container.style.setProperty("--iconBgColor", resolvedBgColor);
+    const horizontalMargin = spacing + Math.min(horizontalPadding, 0);
+    const verticalMargin = Math.min(verticalPadding, 0);
+    const positiveHorizontalPadding = Math.max(horizontalPadding, 0);
+    const positiveVerticalPadding = Math.max(verticalPadding, 0);
 
-    container.style.setProperty("--borderRadius", this.borderRadius + "px");
+    container.style.setProperty("--iconHorizontalMargin", horizontalMargin + "rem");
+    container.style.setProperty("--iconVerticalMargin", verticalMargin + "rem");
+    container.style.setProperty("--iconPaddingHorizontal", positiveHorizontalPadding + "rem");
+    container.style.setProperty("--iconPaddingVertical", positiveVerticalPadding + "rem");
+    container.style.setProperty("margin-top", "var(--iconVerticalMargin, 0rem)", "important");
+    container.style.setProperty("margin-bottom", "var(--iconVerticalMargin, 0rem)", "important");
+    container.style.setProperty("margin-left", "var(--iconHorizontalMargin, 0rem)", "important");
+    container.style.setProperty("margin-right", "var(--iconHorizontalMargin, 0rem)", "important");
 
-    const resolvedBorderColor = lib.colors[this.borderColor] || this.borderColor.toLowerCase();
-    container.style.setProperty("--iconBorderColor", resolvedBorderColor);
+    const resolvedBgColor =
+      lib.colors[this.backgroundColor] || this.backgroundColor.toLowerCase();
+    const resolvedBorderColor =
+      lib.colors[this.borderColor] || this.borderColor.toLowerCase();
 
     const parsedSize = parseFloat(this.iconSize);
-    const size = isNaN(parsedSize) ? 3 : parsedSize;
+    const size = Number.isFinite(parsedSize) ? parsedSize : 3;
     container.style.setProperty("--iconSize", size + "rem");
 
-    if (this.border) {
-      container.classList.add("hasBorder");
-    }
+    const iconBox = document.createElement("span");
+    iconBox.className = "bE-iconBox";
+    iconBox.style.display = "inline-grid";
+    iconBox.style.gridTemplateColumns =
+      "var(--iconPaddingHorizontal, 0rem) auto var(--iconPaddingHorizontal, 0rem)";
+    iconBox.style.gridTemplateRows =
+      "var(--iconPaddingVertical, 0rem) auto var(--iconPaddingVertical, 0rem)";
+    iconBox.style.alignItems = "center";
+    iconBox.style.justifyItems = "center";
+    iconBox.style.width = "max-content";
+    iconBox.style.height = "max-content";
+    iconBox.style.minWidth = "0";
+    iconBox.style.minHeight = "0";
+    iconBox.style.boxSizing = "border-box";
+    iconBox.style.fontSize = "0";
+    iconBox.style.lineHeight = "0";
+    iconBox.style.setProperty("padding", "0", "important");
 
     if (this.backgroundColor !== "Inherit") {
-      container.classList.add("hasBackground");
+      iconBox.classList.add("hasBackground");
+      iconBox.style.backgroundColor = resolvedBgColor;
+    }
+
+    if (this.border) {
+      iconBox.classList.add("hasBorder");
+      iconBox.style.border = "0.12rem solid " + resolvedBorderColor;
+      iconBox.style.borderRadius = this.borderRadius + "px";
+    }
+
+    if (this.invertColors) {
+      iconBox.classList.add("invertColors");
     }
 
     const iconDefinition =
@@ -3009,11 +3169,21 @@ class IconElement {
       img.loading = "lazy";
       img.decoding = "async";
       img.draggable = false;
-      container.appendChild(img);
+      img.style.display = "block";
+      img.style.gridColumn = "2";
+      img.style.gridRow = "2";
+      img.style.height = "var(--iconSize, 3rem)";
+      img.style.width = "auto";
+      img.style.maxWidth = "none";
+      img.style.maxHeight = "none";
+      img.style.objectFit = "contain";
+      img.style.lineHeight = "0";
+      iconBox.appendChild(img);
     } else {
-      container.textContent = "Icon unavailable";
+      iconBox.textContent = "Icon unavailable";
     }
 
+    container.appendChild(iconBox);
     return container;
   }
 }
@@ -3370,6 +3540,11 @@ ArrowElement.prototype.arrows = {
     src: "img/arrowBlocks/DOWN_CA.svg",
     defaultSize: 2.75,
   },
+  DOWN_IL: {
+    label: "Down (IL)",
+    src: "img/arrowBlocks/DOWN_IL.svg",
+    defaultSize: 3,
+  },
   UK: { label: "UK", src: "img/arrowBlocks/UK.svg" },
   APL_UP: { label: "APL Up", src: "img/arrowBlocks/APL_UP.svg" },
   APL_UP_TURN: { label: "APL Up Turn", src: "img/arrowBlocks/APL_UP_TURN.svg" },
@@ -3559,6 +3734,7 @@ TollLogoElement.prototype.logos = {
   PlatePay: { label: "PlatePay", src: "img/tolls/PLATEPAY.svg" },
   PayByMail: { label: "Pay By Mail", src: "img/tolls/PAY_BY_MAIL.png" },
   IPASS: { label: "I-Pass", src: "img/tolls/I-Pass.svg" },
+  IPASSNew: { label: "I-PASS (new)", src: "img/tolls/IPASS-New.svg" },
   GeauxPass: { label: "GeauxPass", src: "img/tolls/GEAUXPASS.svg" },
   GoodToGo: { label: "Good To Go!", src: "img/tolls/GOODTOGO.svg" },
   ExpressToll: { label: "ExpressToll", src: "img/tolls/EXPRESSTOLL.svg" },
@@ -3764,13 +3940,19 @@ class Control {
         properties.backgroundColor == "Fluorescent Pink";
 
       let appliedFullBleedBorderColor = "";
+      const rowWidthValue = parseFloat(properties.width);
+      const rowWidthStyle =
+        Number.isFinite(rowWidthValue) && rowWidthValue > 0
+          ? rowWidthValue + "rem"
+          : "";
+
       if (properties.backgroundFullWidth) {
         flexRow.classList.add("fullBleed");
         flexRow.style.setProperty("--blockBleedLeft", signPadding.left);
         flexRow.style.setProperty("--blockBleedRight", signPadding.right);
         flexRow.style.setProperty("--blockBleedTop", bleedTop);
         flexRow.style.setProperty("--blockBleedBottom", bleedBottom);
-        flexRow.style.width = "";
+        flexRow.style.width = rowWidthStyle;
         flexRow.style.setProperty("--marginTop", "0rem");
         flexRow.style.setProperty("--marginBottom", "0rem");
         flexRow.style.setProperty("--blockPaddingTopExtra", topSpacing);
@@ -3792,6 +3974,13 @@ class Control {
         } else {
           delete flexRow.dataset.fullBleedBorderColor;
         }
+
+        if (resolvedBackgroundColor) {
+          flexRow.dataset.fullBleedBackgroundColor = resolvedBackgroundColor;
+        } else {
+          delete flexRow.dataset.fullBleedBorderColor;
+          delete flexRow.dataset.fullBleedBackgroundColor;
+        }
       } else {
         flexRow.classList.remove("fullBleed");
         flexRow.style.setProperty("--blockBleedLeft", "0rem");
@@ -3800,9 +3989,9 @@ class Control {
         flexRow.style.setProperty("--blockBleedBottom", "0rem");
         flexRow.style.setProperty("--marginTop", topSpacing);
         flexRow.style.setProperty("--marginBottom", bottomSpacing);
-        flexRow.style.width =
-          properties.width == 0 ? "" : properties.width + "rem";
+        flexRow.style.width = rowWidthStyle;
         delete flexRow.dataset.fullBleedBorderColor;
+        delete flexRow.dataset.fullBleedBackgroundColor;
       }
 
       if (usesLightBleedBackground) {
@@ -3815,29 +4004,60 @@ class Control {
         }
       }
 
-      const leftAlignment = document.createElement("div");
-      leftAlignment.className = "blockElementLeft";
-      const centerAlignment = document.createElement("div");
-      centerAlignment.className = "blockElementCenter";
-      const rightAlignment = document.createElement("div");
-      rightAlignment.className = "blockElementRight";
+      const createAlignmentGroup = (alignmentName = "Center") => {
+        const group = document.createElement("div");
+        group.className = "blockElement" + alignmentName;
+        group.dataset.blockAlignment = alignmentName;
+        return group;
+      };
 
-      let lastKnownAlignment = centerAlignment;
+      const getNormalizedAlignment = (alignmentValue, fallback = "Center") => {
+        if (
+          alignmentValue === "Left" ||
+          alignmentValue === "Center" ||
+          alignmentValue === "Right"
+        ) {
+          return alignmentValue;
+        }
+
+        return fallback;
+      };
+
+      const applyAlignmentGroupStretch = (group) => {
+        if (!group || group.children.length === 0) {
+          return;
+        }
+
+        const alignmentName = group.dataset.blockAlignment || "Center";
+        const shouldStretch =
+          (alignmentName === "Left" && properties.stretchLeft) ||
+          (alignmentName === "Center" && properties.stretchCenter) ||
+          (alignmentName === "Right" && properties.stretchRight);
+
+        group.style.flexGrow = shouldStretch ? "1" : "0";
+      };
+
+      const alignmentGroups = [];
+      let lastKnownAlignmentName = "Center";
+      let activeAlignmentGroup = null;
       let dividerBorderColor = null;
+
       for (let blockIdx = 0; blockIdx < row.length; blockIdx++) {
         let elem = row[blockIdx];
-        switch (elem.alignment) {
-          case "Left":
-            lastKnownAlignment = leftAlignment;
-            break;
-          case "Right":
-            lastKnownAlignment = rightAlignment;
-            break;
-          case "Center":
-            lastKnownAlignment = centerAlignment;
-            break;
-          default:
+        const nextAlignmentName = getNormalizedAlignment(
+          elem.alignment,
+          lastKnownAlignmentName
+        );
+
+        if (
+          !activeAlignmentGroup ||
+          activeAlignmentGroup.dataset.blockAlignment !== nextAlignmentName
+        ) {
+          activeAlignmentGroup = createAlignmentGroup(nextAlignmentName);
+          alignmentGroups.push(activeAlignmentGroup);
         }
+
+        lastKnownAlignmentName = nextAlignmentName;
 
         if (
           elem instanceof DividerElement &&
@@ -3855,19 +4075,8 @@ class Control {
         const blockElmt = elem.createElement(panel, subPanel);
         blockElmt.dataset.signRow = i;
         blockElmt.dataset.signBlock = blockIdx;
-        lastKnownAlignment.appendChild(blockElmt);
+        activeAlignmentGroup.appendChild(blockElmt);
       }
-
-      leftAlignment.style.flexGrow =
-        properties.stretchLeft && leftAlignment.children.length > 0 ? "1" : "0";
-      centerAlignment.style.flexGrow =
-        properties.stretchCenter && centerAlignment.children.length > 0
-          ? "1"
-          : "0";
-      rightAlignment.style.flexGrow =
-        properties.stretchRight && rightAlignment.children.length > 0
-          ? "1"
-          : "0";
 
       if (dividerBorderColor) {
         const normalizedDividerColor =
@@ -3882,9 +4091,11 @@ class Control {
         ? "true"
         : "false";
 
-      flexRow.appendChild(leftAlignment);
-      flexRow.appendChild(centerAlignment);
-      flexRow.appendChild(rightAlignment);
+      for (const alignmentGroup of alignmentGroups) {
+        applyAlignmentGroupStretch(alignmentGroup);
+        flexRow.appendChild(alignmentGroup);
+      }
+
       flexBox.appendChild(flexRow);
     }
 

@@ -607,21 +607,24 @@
   box-sizing: border-box;
 }
 
-/* Standard guide arrows should widen the subpanel group, not fake it with side padding */
+/* Standard guide arrows widen the actual subpanel group so the sign body matches the arrow band. */
 .signHolder.hasStandardGuideArrowWidthReserve {
+  width: var(--standardGuideArrowMinWidth) !important;
   min-width: var(--standardGuideArrowMinWidth) !important;
+  max-width: none !important;
   justify-content: stretch;
+  box-sizing: border-box;
 }
 
-.signHolder.hasStandardGuideArrowWidthReserve > .subPanelDisplay:not(.hasAplWidthReserve):not(:only-of-type) {
+.signHolder.hasStandardGuideArrowWidthReserve > .subPanelDisplay:not(.hasAplWidthReserve) {
   flex: 1 1 0 !important;
   width: auto !important;
-  min-width: max-content !important;
+  min-width: 0 !important;
   max-width: none !important;
   box-sizing: border-box;
 }
 
-.signHolder.hasStandardGuideArrowWidthReserve > .subPanelDisplay:not(.hasAplWidthReserve):not(:only-of-type) > .signContentContainer {
+.signHolder.hasStandardGuideArrowWidthReserve > .subPanelDisplay:not(.hasAplWidthReserve) > .signContentContainer {
   width: 100% !important;
   min-width: max-content !important;
   box-sizing: border-box;
@@ -1366,8 +1369,10 @@
 }
 .guideArrows.exit_only:has(.exitOnlyArrow[src$="A-4.svg"]),
 .guideArrows.exit_only:has(.exitOnlyArrow[src$="A-1.svg"]) {
-  padding-top: 0.1rem !important;
-  padding-bottom: 0.1rem !important;
+  padding-top: var(--guideArrowSpacing, 0.25rem) !important;
+  padding-bottom: var(--guideArrowSpacing, 0.25rem) !important;
+  padding-left: 0.1rem !important;
+  padding-right: 0.1rem !important;
 }
 
 .guideArrows.exit_only:has(.exitOnlyArrow[src$="A-4.svg"]) .arrowContainer,
@@ -2563,7 +2568,7 @@ img.exitOnlyArrow:last-child {
   align-items: center !important;
   justify-content: center !important;
 
-  padding: 0.14rem 0.65rem 0.18rem !important;
+  padding: var(--guideArrowSpacing, 0.25rem) 0.65rem !important;
   margin: 0 !important;
 
   background-color: var(--green) !important;
@@ -2615,7 +2620,7 @@ img.exitOnlyArrow:last-child {
   justify-content: center !important;
 
   gap: 0.32rem !important;
-  padding: 0.14rem 0.65rem 0.18rem !important;
+  padding: var(--guideArrowSpacing, 0.25rem) 0.65rem !important;
   margin: 0 !important;
 
   background-color: var(--yellow) !important;
@@ -2839,4 +2844,250 @@ img.exitOnlyArrow:last-child {
 
 #panelContainer.exportCaptureTarget .panel:last-child {
   padding-right: 0 !important;
+}
+
+
+/* Dynamic full-bleed row corner fill
+   These patches fill only the square area behind rounded sign corners.
+   The sign itself stays above them, so only the outside corner color changes. */
+.signContainer.hasDynamicSignCornerPatches {
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+.signContainer.hasDynamicSignCornerPatches > :not(.dynamicSignCornerPatch) {
+  position: relative;
+  z-index: 2;
+}
+
+.signContainer.hasDynamicSignCornerPatches > .dynamicSignCornerPatch {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: calc(var(--signBorderRadius, 0.75rem) + 0.35rem);
+  z-index: 1;
+  pointer-events: none;
+}
+
+.signContainer.hasDynamicSignCornerPatches > .dynamicSignCornerPatch.top {
+  top: 0;
+  background-color: var(--dynamicSignTopCornerColor, transparent);
+}
+
+.signContainer.hasDynamicSignCornerPatches > .dynamicSignCornerPatch.bottom {
+  bottom: 0;
+  background-color: var(--dynamicSignBottomCornerColor, transparent);
+}
+
+/* Rendered sign selection and icon spacing fixes */
+.selectedRenderedSubpanel,
+.selectedRenderedBlockRow,
+.selectedRenderedBlockElement {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.bE-iconElement {
+  display: inline-grid;
+  place-items: center;
+  font-size: 0;
+  line-height: 0;
+  width: max-content;
+  height: max-content;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  margin-top: var(--iconVerticalMargin, 0rem);
+  margin-bottom: var(--iconVerticalMargin, 0rem);
+  margin-left: var(--iconHorizontalMargin, 0rem);
+  margin-right: var(--iconHorizontalMargin, 0rem);
+  padding: 0 !important;
+  background-color: transparent !important;
+  border: 0 !important;
+}
+
+.bE-iconElement > .bE-iconBox {
+  display: inline-grid;
+  grid-template-columns: var(--iconPaddingHorizontal, 0rem) auto var(--iconPaddingHorizontal, 0rem);
+  grid-template-rows: var(--iconPaddingVertical, 0rem) auto var(--iconPaddingVertical, 0rem);
+  align-items: center;
+  justify-items: center;
+  font-size: 0;
+  line-height: 0;
+  width: max-content;
+  height: max-content;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 0 !important;
+}
+
+.bE-iconElement > .bE-iconBox.hasBackground {
+  background-color: var(--iconBgColor);
+}
+
+.bE-iconElement > .bE-iconBox.hasBorder {
+  border: 0.12rem solid var(--iconBorderColor, currentColor);
+  border-radius: var(--borderRadius, 0px);
+}
+
+.bE-iconElement > .bE-iconBox > img,
+.bE-iconElement > img {
+  display: block;
+  grid-column: 2;
+  grid-row: 2;
+  width: auto;
+  height: var(--iconSize, 3rem);
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+}
+
+/* Export-only real first-letter spans for shield banners and action-message banner text. */
+.exportRealFirstLetter::first-letter {
+  font-size: inherit !important;
+  line-height: inherit !important;
+}
+
+.exportBannerFirstLetter {
+  display: inline-block;
+}
+
+.exportStaticCaptureWrapper,
+.exportStaticCaptureClone {
+  box-sizing: border-box;
+}
+
+
+/* Real DOM first-letter sizing for action-message banner text so SVG/PNG export matches the editor. */
+.bE-banner.bE-realBannerFirstLetter::first-letter {
+  font-size: inherit !important;
+}
+
+.bE-banner.bE-realBannerFirstLetter .bE-bannerFirstLetter {
+  display: inline-block;
+  font-size: calc(var(--bannerFirstLetterSize, 120) * 1%);
+  line-height: 1;
+}
+
+.exportStaticCaptureWrapper {
+  isolation: isolate;
+}
+
+
+/* Standard guide-arrow dropdown additions */
+.guideArrows .arrow.illinoisDownArrow,
+.guideArrows .arrow.canadianDownArrow {
+  height: 1.5rem !important;
+  width: auto !important;
+  object-fit: contain !important;
+}
+
+.bE-iconElement > .bE-iconBox.invertColors > img {
+  filter: invert(1);
+  -webkit-filter: invert(1);
+}
+
+/* Multi-line control/action text alignment
+   The control's Alignment setting already controls which block group the element sits in.
+   These rules make that same setting align the individual lines inside one multi-line text block. */
+.bE-textElement.bE-multilineTextElement {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: max-content;
+  max-width: 100%;
+  text-align: var(--alignmentCss, center);
+  white-space: normal;
+}
+
+.bE-textElement.bE-multilineTextElement > .bE-textLine {
+  display: block;
+  width: 100%;
+  text-align: var(--alignmentCss, center);
+  white-space: pre;
+  line-height: inherit;
+}
+
+/* Tight spaces used by enlarged action-message/control-text numerals. */
+.bE-tightSpace,
+.bE-tightNumeralSpace {
+  display: inline;
+  white-space: pre;
+  font-size: var(--tightNumeralSpaceScale, 0.35em);
+  line-height: 0;
+  vertical-align: baseline;
+}
+
+.bE-tightNumeralSpace {
+  width: auto;
+}
+
+.bE-tightInternalNumeralSpace {
+  font-size: var(--tightInternalNumeralSpaceScale, 0.35em);
+}
+
+
+/* Vertically stacked panels within the same post position */
+.panelStack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--stackedPanelSpacing, 0rem);
+  width: max-content;
+  flex: 0 0 auto;
+}
+
+
+.panelStack.stackedPanelMatchWidth > .panel {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.panelStack.stackedPanelMatchWidth > .panel > .signContainer,
+.panelStack.stackedPanelMatchWidth > .panel > .signContainer > .sign,
+.panelStack.stackedPanelMatchWidth > .panel > .signContainer > .sign > .signHolder {
+  width: 100%;
+  min-width: 100%;
+  box-sizing: border-box;
+}
+
+.panelStack.stackedPanelMatchWidth > .panel > .exitTabContainer.full,
+.panelStack.stackedPanelMatchWidth > .panel > .exitTabContainer.wide,
+.panelStack.stackedPanelMatchWidth > .panel > .exitTabContainer.edge {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#panelContainer > .panelStack:first-child {
+  padding-left: 1rem;
+}
+
+#panelContainer > .panelStack:last-child {
+  padding-right: 1rem;
+}
+
+.panelStack > .panel {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.panelStack > .panel:first-child,
+.panelStack > .panel:last-child {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.panelStack .stackedPanelBottom {
+  margin-top: 0;
+}
+
+#postContainer.polePositionRural .panelStack,
+#postContainer.polePositionCenter .panelStack {
+  margin-top: -10rem;
+}
+
+#postContainer.polePositionCenter .panelStack {
+  margin-top: -22.5rem;
 }
