@@ -1005,7 +1005,8 @@
 }
 .bannerShieldContainer.TX.four .routeNumber {
     color: var(--black);
-	font-family: "Series C";
+	font-family: "Series D
+		";
 }
 
 .bannerShieldContainer.TX.BELTWAY .routeNumber,
